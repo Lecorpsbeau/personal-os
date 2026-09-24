@@ -2,20 +2,68 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME_DIR="${PERSONAL_OS_RUNTIME_DIR:-$ROOT_DIR/.runtime/personal-os}"
-MAC_DATABASE="${MAC_DETECTIVE_DATABASE:-$RUNTIME_DIR/mac_detective.sqlite}"
-RUNTIME_STATUS="${MAC_DETECTIVE_RUNTIME_STATUS:-$RUNTIME_DIR/.mac-detective-runtime-status.json}"
+SERVICE_LABEL="${PERSONAL_OS_SERVICE_LABEL:-com.personal-os.mac-detective}"
+LAUNCHCTL_BIN="${PERSONAL_OS_LAUNCHCTL_BIN:-launchctl}"
+SERVICE_PLIST="${PERSONAL_OS_SERVICE_PLIST:-${HOME:-$ROOT_DIR}/Library/LaunchAgents/$SERVICE_LABEL.plist}"
+EXPLICIT_RUNTIME_DIR="${PERSONAL_OS_RUNTIME_DIR:-}"
+EXPLICIT_DATABASE="${MAC_DETECTIVE_DATABASE:-}"
+EXPLICIT_RUNTIME_STATUS="${MAC_DETECTIVE_RUNTIME_STATUS:-}"
+EXPLICIT_FS_USAGE="${MAC_DETECTIVE_FS_USAGE:-}"
+RUNTIME_DIR="${EXPLICIT_RUNTIME_DIR:-$ROOT_DIR/.runtime/personal-os}"
+MAC_DATABASE="${EXPLICIT_DATABASE:-$RUNTIME_DIR/mac_detective.sqlite}"
+RUNTIME_STATUS="${EXPLICIT_RUNTIME_STATUS:-$RUNTIME_DIR/.mac-detective-runtime-status.json}"
 START_TIMEOUT="${PERSONAL_OS_START_TIMEOUT:-30}"
 SHUTDOWN_TIMEOUT="${PERSONAL_OS_SHUTDOWN_TIMEOUT:-10}"
+SERVICE_CONFIGURED=false
+SERVICE_LOADED=false
+SERVICE_FS_USAGE="$EXPLICIT_FS_USAGE"
 
-if [[ "$RUNTIME_DIR" != /* ]]; then
-    RUNTIME_DIR="$ROOT_DIR/$RUNTIME_DIR"
+absolute_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s/%s\n' "$ROOT_DIR" "$1" ;;
+    esac
+}
+
+read_service_value() {
+    local key="$1"
+    if [[ -f "$SERVICE_PLIST" ]] && command -v plutil >/dev/null 2>&1; then
+        plutil -extract "$key" raw -o - "$SERVICE_PLIST" 2>/dev/null || true
+    fi
+}
+
+SERVICE_PLIST="$(absolute_path "$SERVICE_PLIST")"
+if [[ -f "$SERVICE_PLIST" ]]; then
+    service_database="$(read_service_value EnvironmentVariables.MAC_DETECTIVE_DATABASE)"
+    service_status="$(read_service_value EnvironmentVariables.MAC_DETECTIVE_RUNTIME_STATUS)"
+    service_stdout="$(read_service_value StandardOutPath)"
+    service_fs_usage="$(read_service_value EnvironmentVariables.MAC_DETECTIVE_FS_USAGE)"
+    if [[ -z "$EXPLICIT_DATABASE" && -n "$service_database" ]]; then
+        MAC_DATABASE="$service_database"
+        SERVICE_CONFIGURED=true
+    fi
+    if [[ -z "$EXPLICIT_RUNTIME_STATUS" && -n "$service_status" ]]; then
+        RUNTIME_STATUS="$service_status"
+        SERVICE_CONFIGURED=true
+    fi
+    if [[ -z "$EXPLICIT_RUNTIME_DIR" && -n "$service_stdout" ]]; then
+        RUNTIME_DIR="$(dirname -- "$service_stdout")"
+        SERVICE_CONFIGURED=true
+    fi
+    if [[ -z "$EXPLICIT_FS_USAGE" && -n "$service_fs_usage" ]]; then
+        SERVICE_FS_USAGE="$service_fs_usage"
+        SERVICE_CONFIGURED=true
+    fi
 fi
-if [[ "$MAC_DATABASE" != /* ]]; then
-    MAC_DATABASE="$ROOT_DIR/$MAC_DATABASE"
-fi
-if [[ "$RUNTIME_STATUS" != /* ]]; then
-    RUNTIME_STATUS="$ROOT_DIR/$RUNTIME_STATUS"
+
+RUNTIME_DIR="$(absolute_path "$RUNTIME_DIR")"
+MAC_DATABASE="$(absolute_path "$MAC_DATABASE")"
+RUNTIME_STATUS="$(absolute_path "$RUNTIME_STATUS")"
+
+if [[ "$SERVICE_CONFIGURED" == true ]] && command -v "$LAUNCHCTL_BIN" >/dev/null 2>&1; then
+    if "$LAUNCHCTL_BIN" print "gui/$(id -u)/$SERVICE_LABEL" >/dev/null 2>&1; then
+        SERVICE_LOADED=true
+    fi
 fi
 
 is_positive_integer() {
@@ -103,7 +151,13 @@ status_is_ready() {
     persisted="$(plutil -extract last_successful_persistence_at raw -o - "$RUNTIME_STATUS" 2>/dev/null)" || return 1
     [[ "$version" == "1" && "$state" == "running" ]] || return 1
     [[ "$cycles" =~ ^[0-9]+$ && "$cycles" -ge 1 ]] || return 1
-    [[ -n "$persisted" && "$persisted" != "null" ]]
+    [[ -n "$persisted" && "$persisted" != "null" ]] || return 1
+
+    local status_mtime now_epoch
+    status_mtime="$(stat -f '%m' "$RUNTIME_STATUS" 2>/dev/null || printf '0')"
+    now_epoch="$(date +%s)"
+    [[ "$status_mtime" =~ ^[0-9]+$ ]] || return 1
+    (( now_epoch >= status_mtime && now_epoch - status_mtime <= 10 ))
 }
 
 collect_descendants() {
@@ -206,13 +260,25 @@ find_binary() {
     printf '%s/%s\n' "${bin_dir%/}" "$binary_name"
 }
 
-MAC_BIN="$(find_binary "$ROOT_DIR/apps/mac-detective" mac-detective "${MAC_DETECTIVE_BIN:-}")"
+service_mac_bin="$(read_service_value ProgramArguments.0)"
+if [[ -n "$service_mac_bin" ]]; then
+    service_mac_bin="$(absolute_path "$service_mac_bin")"
+fi
+if [[ "$SERVICE_LOADED" == true && -n "$service_mac_bin" && -x "$service_mac_bin" ]]; then
+    MAC_BIN="$service_mac_bin"
+else
+    MAC_BIN="$(find_binary "$ROOT_DIR/apps/mac-detective" mac-detective "${MAC_DETECTIVE_BIN:-}")"
+fi
 DASHBOARD_BIN="$(find_binary "$ROOT_DIR/apps/dashboard" PersonalOSDashboard "${DASHBOARD_BIN:-}")"
 
 if [[ ! -x "$MAC_BIN" || ! -x "$DASHBOARD_BIN" ]]; then
     printf '%s\n' "Personal OS components are missing; building them now..."
     "$ROOT_DIR/scripts/build-personal-os.sh"
-    MAC_BIN="$(find_binary "$ROOT_DIR/apps/mac-detective" mac-detective "${MAC_DETECTIVE_BIN:-}")"
+    if [[ "$SERVICE_LOADED" == true && -n "$service_mac_bin" && -x "$service_mac_bin" ]]; then
+        MAC_BIN="$service_mac_bin"
+    else
+        MAC_BIN="$(find_binary "$ROOT_DIR/apps/mac-detective" mac-detective "${MAC_DETECTIVE_BIN:-}")"
+    fi
     DASHBOARD_BIN="$(find_binary "$ROOT_DIR/apps/dashboard" PersonalOSDashboard "${DASHBOARD_BIN:-}")"
 fi
 
@@ -224,21 +290,25 @@ fi
 printf '%s\n' "Runtime directory: $RUNTIME_DIR"
 printf '%s\n' "SQLite database: $MAC_DATABASE"
 printf '%s\n' "Runtime status: $RUNTIME_STATUS"
-printf '%s\n' 'Starting mac-detective (no sudo)...'
 
-# A fresh status file prevents an old status from satisfying readiness.
-rm -f "$RUNTIME_STATUS"
-PERSONAL_OS_ROOT="$ROOT_DIR" \
-MAC_DETECTIVE_FS_USAGE="${MAC_DETECTIVE_FS_USAGE:-0}" \
-MAC_DETECTIVE_DATABASE="$MAC_DATABASE" \
-MAC_DETECTIVE_RUNTIME_STATUS="$RUNTIME_STATUS" \
-    "$MAC_BIN" > "$RUNTIME_DIR/mac-detective.log" 2>&1 &
-MAC_PID=$!
+if [[ "$SERVICE_LOADED" == true ]]; then
+    printf 'mac-detective is managed by launchd (%s); starting Dashboard only.\n' "$SERVICE_LABEL"
+else
+    printf '%s\n' 'Starting mac-detective (no sudo)...'
+    # A fresh status file prevents an old status from satisfying readiness.
+    rm -f "$RUNTIME_STATUS"
+    PERSONAL_OS_ROOT="$ROOT_DIR" \
+    MAC_DETECTIVE_FS_USAGE="${SERVICE_FS_USAGE:-${MAC_DETECTIVE_FS_USAGE:-0}}" \
+    MAC_DETECTIVE_DATABASE="$MAC_DATABASE" \
+    MAC_DETECTIVE_RUNTIME_STATUS="$RUNTIME_STATUS" \
+        "$MAC_BIN" > "$RUNTIME_DIR/mac-detective.log" 2>&1 &
+    MAC_PID=$!
+fi
 
 ready=0
 iterations=$((START_TIMEOUT * 4))
 for ((attempt = 0; attempt < iterations; attempt++)); do
-    if ! is_running "$MAC_PID"; then
+    if [[ "$SERVICE_LOADED" == false ]] && ! is_running "$MAC_PID"; then
         if wait "$MAC_PID"; then
             mac_exit=0
         else
@@ -257,7 +327,9 @@ done
 
 if (( ready != 1 )); then
     printf 'Timed out waiting for SQLite and runtime status.\n' >&2
-    tail -n 40 "$RUNTIME_DIR/mac-detective.log" >&2 || true
+    if [[ "$SERVICE_LOADED" == false ]]; then
+        tail -n 40 "$RUNTIME_DIR/mac-detective.log" >&2 || true
+    fi
     exit 1
 fi
 
@@ -268,11 +340,14 @@ MAC_DETECTIVE_RUNTIME_STATUS="$RUNTIME_STATUS" \
     "$DASHBOARD_BIN" > "$RUNTIME_DIR/dashboard.log" 2>&1 &
 DASHBOARD_PID=$!
 
-while is_running "$MAC_PID" && is_running "$DASHBOARD_PID"; do
+while is_running "$DASHBOARD_PID"; do
+    if [[ "$SERVICE_LOADED" == false ]] && ! is_running "$MAC_PID"; then
+        break
+    fi
     sleep 1
 done
 
-if ! is_running "$MAC_PID"; then
+if [[ "$SERVICE_LOADED" == false ]] && ! is_running "$MAC_PID"; then
     if wait "$MAC_PID"; then
         mac_exit=0
     else

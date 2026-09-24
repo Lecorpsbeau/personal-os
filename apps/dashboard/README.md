@@ -22,8 +22,9 @@ swift run --package-path apps/dashboard
 
 Sans variable d'environnement, le dashboard recherche une base
 `data/database/mac_detective.sqlite` dans le repository et un fichier
-`.mac-detective-runtime-status.json` placé à côté de cette base. Pour une autre
-base :
+`.mac-detective-runtime-status.json` placé à côté de cette base. Si un
+LaunchAgent Personal OS est installé, ses chemins sont repris automatiquement.
+Pour une autre base :
 
 ```sh
 MAC_DETECTIVE_DATABASE=/chemin/vers/mac_detective.sqlite \
@@ -33,4 +34,6 @@ swift run --package-path apps/dashboard
 
 Le repository retrye l'ouverture après une absence ou une erreur SQLite
 temporaire. Il ne démarre pas mac-detective, ne déclenche aucune maintenance et
-ne modifie ni la base ni les fichiers de statut.
+ne modifie ni la base ni les fichiers de statut. Si un LaunchAgent
+`com.personal-os.mac-detective` est chargé, le launcher M011 détecte le service
+et démarre uniquement le Dashboard.

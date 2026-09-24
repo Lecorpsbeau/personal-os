@@ -51,23 +51,39 @@ public struct DashboardRepositoryConfiguration: Sendable {
     public static func local(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
-        workingDirectory: URL? = nil
+        workingDirectory: URL? = nil,
+        detectService: Bool = true
     ) -> DashboardRepositoryConfiguration {
         let currentDirectory = workingDirectory
             ?? URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
         let statusPath = environment["MAC_DETECTIVE_RUNTIME_STATUS"]
+        let servicePaths = detectService
+            ? servicePaths(environment: environment, fileManager: fileManager)
+            : nil
 
         if let databasePath = environment["MAC_DETECTIVE_DATABASE"] {
             let databaseURL = fileURL(
                 for: databasePath,
                 relativeTo: currentDirectory
             )
-            let statusURL = statusPath.map {
+            let statusURL = (statusPath ?? servicePaths?.runtimeStatus).map {
                 fileURL(for: $0, relativeTo: currentDirectory)
             }
             return DashboardRepositoryConfiguration(
                 databaseURL: databaseURL,
                 runtimeStatusURL: statusURL
+            )
+        }
+
+        if let servicePaths {
+            return DashboardRepositoryConfiguration(
+                databaseURL: fileURL(
+                    for: servicePaths.database,
+                    relativeTo: currentDirectory
+                ),
+                runtimeStatusURL: (statusPath ?? servicePaths.runtimeStatus).map {
+                    fileURL(for: $0, relativeTo: currentDirectory)
+                }
             )
         }
 
@@ -117,6 +133,35 @@ public struct DashboardRepositoryConfiguration: Sendable {
                 fileURL(for: $0, relativeTo: currentDirectory)
             }
         )
+    }
+
+    private static func servicePaths(
+        environment: [String: String],
+        fileManager: FileManager
+    ) -> (database: String, runtimeStatus: String?)? {
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let label = environment["PERSONAL_OS_SERVICE_LABEL"]
+            ?? "com.personal-os.mac-detective"
+        let plistPath = environment["PERSONAL_OS_SERVICE_PLIST"]
+            ?? URL(fileURLWithPath: home, isDirectory: true)
+                .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+                .path
+        let plistURL = URL(fileURLWithPath: plistPath)
+        guard fileManager.fileExists(atPath: plistURL.path),
+              let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+              ) as? [String: Any],
+              let variables = plist["EnvironmentVariables"] as? [String: Any],
+              let database = variables["MAC_DETECTIVE_DATABASE"] as? String,
+              !database.isEmpty else {
+            return nil
+        }
+        let runtimeStatus = (variables["MAC_DETECTIVE_RUNTIME_STATUS"] as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        return (database, runtimeStatus)
     }
 
     private static func fileURL(for path: String, relativeTo directory: URL) -> URL {

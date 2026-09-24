@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.personal-os.mac-detective</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__PERSONAL_OS_MAC_DETECTIVE_BIN__</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__PERSONAL_OS_REPOSITORY_ROOT__</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PERSONAL_OS_ROOT</key>
+		<string>__PERSONAL_OS_REPOSITORY_ROOT__</string>
+		<key>MAC_DETECTIVE_DATABASE</key>
+		<string>__PERSONAL_OS_DATABASE__</string>
+		<key>MAC_DETECTIVE_RUNTIME_STATUS</key>
+		<string>__PERSONAL_OS_RUNTIME_STATUS__</string>
+		<key>MAC_DETECTIVE_FS_USAGE</key>
+		<string>__PERSONAL_OS_FS_USAGE__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>__PERSONAL_OS_LOG_DIR__/mac-detective.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>__PERSONAL_OS_LOG_DIR__/mac-detective.stderr.log</string>
+</dict>
+</plist>

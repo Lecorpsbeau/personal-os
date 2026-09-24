@@ -83,6 +83,67 @@ Les chemins sont configurables pour ne pas dépendre d'un nom de compte ou
 d'un chemin personnel codé en dur. `PERSONAL_OS_START_TIMEOUT` et
 `PERSONAL_OS_SHUTDOWN_TIMEOUT` permettent d'ajuster les attentes du launcher.
 
+## Service macOS launchd
+
+mac-detective peut fonctionner sans terminal via un LaunchAgent utilisateur :
+
+```sh
+./scripts/install-personal-os-service.sh
+./scripts/status-personal-os-service.sh
+```
+
+Le service par défaut est :
+
+- label : `com.personal-os.mac-detective`
+- plist installé : `~/Library/LaunchAgents/com.personal-os.mac-detective.plist`
+- domaine : `gui/$(id -u)`
+- template : `deploy/com.personal-os.mac-detective.plist`
+
+L'installateur construit `mac-detective`, crée les chemins utilisateur, génère
+le plist sans chemin personnel codé en dur, puis utilise `launchctl bootstrap`.
+`RunAtLoad` est activé. `KeepAlive` ne redémarre le service qu'après une sortie
+non réussie; `ThrottleInterval=10` évite une boucle agressive. Le processus
+reçoit `SIGTERM` via `bootout`, puis utilise le graceful shutdown M009.
+
+Les données par défaut du service sont :
+
+```text
+~/Library/Application Support/PersonalOS/bin/mac-detective
+~/Library/Application Support/PersonalOS/mac_detective.sqlite
+~/Library/Application Support/PersonalOS/.mac-detective-runtime-status.json
+~/Library/Logs/PersonalOS/mac-detective.stdout.log
+~/Library/Logs/PersonalOS/mac-detective.stderr.log
+```
+
+`MAC_DETECTIVE_DATABASE`, `MAC_DETECTIVE_RUNTIME_STATUS`,
+`PERSONAL_OS_SERVICE_SUPPORT_DIR`, `PERSONAL_OS_SERVICE_BIN_DIR` et
+`PERSONAL_OS_LOG_DIR` permettent de choisir d'autres chemins. Les logs peuvent
+être vérifiés avec le script status et
+faire l'objet d'une rotation simple, sans logger externe :
+
+```sh
+./scripts/rotate-personal-os-logs.sh check
+./scripts/rotate-personal-os-logs.sh rotate
+```
+
+Le Dashboard n'est jamais inclus dans le LaunchAgent. Si le service est chargé,
+`./scripts/start-personal-os.sh` détecte launchd et démarre uniquement le
+Dashboard avec les chemins du service. Sinon, le launcher M011 démarre les deux
+processus comme auparavant.
+
+Désinstallation :
+
+```sh
+./scripts/uninstall-personal-os-service.sh
+```
+
+La désinstallation arrête et décharge le service puis supprime seulement le
+plist installé. SQLite, runtime-status et logs utilisateur sont conservés.
+
+`fs_usage` reste désactivé par défaut. `MAC_DETECTIVE_FS_USAGE=1` est une
+activation explicite qui nécessite les permissions appropriées ; aucun mot de
+passe ou `sudo` automatique n'est installé dans le plist.
+
 ## Dashboard
 
 La navigation native macOS propose :
@@ -119,9 +180,11 @@ Les tests du launcher peuvent aussi être exécutés avec :
 
 ```sh
 ./scripts/test-personal-os-launcher.sh
+./scripts/test-personal-os-service.sh
+./scripts/smoke-personal-os-service.sh
 ```
 
-Sur le smoke test local exécuté pendant M011, le Dashboard est resté autour de
+Sur le smoke test local exécuté pendant M011/M012, le Dashboard est resté autour de
 0–17 % CPU et 93–103 MB RSS sur la machine de validation, tandis que
 mac-detective est resté autour de 0–3 % CPU et 10–12 MB RSS avec `fs_usage`
 désactivé. Ces valeurs sont indicatives et dépendent de la charge et du nombre
@@ -145,9 +208,11 @@ Si l'utilisateur l'active explicitement sans permission, il doit afficher
 l'état `permission denied` et les événements disk restent absents ou limités.
 Cela ne constitue pas un test root. Ne pas utiliser `sudo` automatiquement.
 
-## Portée de M011
+## Portée de M012
 
-M011 ne fournit volontairement pas de `launchd`, de daemon système, de Life
-API, de backend cloud, de ML, de notifications, de login ou de télémétrie.
-`fs_usage` reste optionnel et son état de permission est affiché tel que fourni
-par mac-detective ; aucun test root n'est simulé.
+M012 ajoute uniquement un LaunchAgent utilisateur pour mac-detective. Il ne
+fournit pas de daemon root, de Life API, de backend cloud, de ML, de
+notifications, de login ou de télémétrie. Le Dashboard reste une application
+utilisateur lancée séparément. `fs_usage` reste optionnel et son état de
+permission est affiché tel que fourni par mac-detective ; aucun test root n'est
+simulé.
