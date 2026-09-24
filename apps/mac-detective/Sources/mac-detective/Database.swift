@@ -24,9 +24,47 @@ private enum SQLiteBinding {
     case null
 }
 
+private enum AggregateGranularity: Int {
+    case hourly = 0
+    case daily = 1
+
+    var interval: TimeInterval {
+        switch self {
+        case .hourly:
+            return 3_600
+        case .daily:
+            return 86_400
+        }
+    }
+
+    var systemTable: String {
+        switch self {
+        case .hourly:
+            return "hourly_system_stats"
+        case .daily:
+            return "daily_system_stats"
+        }
+    }
+
+    var processTable: String {
+        switch self {
+        case .hourly:
+            return "hourly_process_stats"
+        case .daily:
+            return "daily_process_stats"
+        }
+    }
+}
+
+private struct DirtyAggregateBucket {
+    let granularity: AggregateGranularity
+    let start: TimeInterval
+}
+
 final class Database {
 
-    private static let currentSchemaVersion: Int32 = 2
+    private static let currentSchemaVersion: Int32 = 3
+    private static let maintenanceBucketBatchSize = 32
 
     private var database: OpaquePointer?
     private let retentionPolicy: DatabaseRetentionPolicy
@@ -37,6 +75,7 @@ final class Database {
     private var processSampleInsertStatement: OpaquePointer?
     private var diskProcessEventInsertStatement: OpaquePointer?
     private var eventInsertStatement: OpaquePointer?
+    private var dirtyBucketInsertStatement: OpaquePointer?
 
     init(
         databasePath: String? = nil,
@@ -188,6 +227,8 @@ final class Database {
             """)
 
             try createAggregateTables()
+            try ensureAggregateColumns()
+            try createMaintenanceTable()
 
             try execute(query: """
                 CREATE INDEX IF NOT EXISTS idx_system_samples_timestamp
@@ -195,9 +236,21 @@ final class Database {
             """)
 
             try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_process_samples_timestamp
+                ON process_samples(timestamp);
+            """)
+
+            try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_disk_process_events_timestamp
+                ON disk_process_events(timestamp);
+            """)
+
+            try execute(query: """
                 CREATE INDEX IF NOT EXISTS idx_events_snapshot_id
                 ON events(snapshot_id);
             """)
+
+            try seedDirtyBuckets()
 
             try execute(
                 query: "PRAGMA user_version = \(Self.currentSchemaVersion);"
@@ -348,6 +401,64 @@ final class Database {
                 PRIMARY KEY (bucket_start, pid, process_name)
             );
         """)
+    }
+
+    private func ensureAggregateColumns() throws {
+        for table in ["hourly_system_stats", "daily_system_stats"] {
+            if try !tableHasColumn(table, "dropped_events_sum") {
+                try execute(query: """
+                    ALTER TABLE \(table)
+                    ADD COLUMN dropped_events_sum INTEGER NOT NULL DEFAULT 0;
+                """)
+            }
+        }
+    }
+
+    private func createMaintenanceTable() throws {
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS maintenance_dirty_buckets (
+                granularity INTEGER NOT NULL,
+                bucket_start REAL NOT NULL,
+                PRIMARY KEY (granularity, bucket_start)
+            );
+        """)
+    }
+
+    private func seedDirtyBuckets() throws {
+        let hourlyExpression = """
+            CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', timestamp, 'unixepoch')) AS REAL)
+        """
+        let dailyExpression = """
+            CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', timestamp, 'unixepoch')) AS REAL)
+        """
+
+        let sources = [
+            ("system_samples", hourlyExpression, dailyExpression),
+            ("process_samples", hourlyExpression, dailyExpression),
+            ("disk_process_events", hourlyExpression, dailyExpression),
+            ("events", hourlyExpression, dailyExpression)
+        ]
+
+        for (table, hourly, daily) in sources {
+            try execute(query: """
+                INSERT OR IGNORE INTO maintenance_dirty_buckets (
+                    granularity,
+                    bucket_start
+                )
+                SELECT 0, \(hourly)
+                FROM \(table)
+                GROUP BY 2;
+                """)
+            try execute(query: """
+                INSERT OR IGNORE INTO maintenance_dirty_buckets (
+                    granularity,
+                    bucket_start
+                )
+                SELECT 1, \(daily)
+                FROM \(table)
+                GROUP BY 2;
+                """)
+        }
     }
 
     private func schemaVersion() throws -> Int32 {
@@ -545,6 +656,78 @@ final class Database {
         (try? scalarText("PRAGMA journal_mode;")) ?? ""
     }
 
+    var maintenanceInterval: TimeInterval {
+        retentionPolicy.maintenanceInterval
+    }
+
+    private func bucketStart(
+        for timestamp: Date,
+        interval: TimeInterval
+    ) -> TimeInterval {
+        floor(timestamp.timeIntervalSince1970 / interval) * interval
+    }
+
+    private func markBucketsDirty(timestamp: Date) throws {
+        try markBucketsDirty(timestamps: [timestamp])
+    }
+
+    private func markBucketsDirty(timestamps: [Date]) throws {
+        guard !timestamps.isEmpty else {
+            return
+        }
+
+        let statement = try cachedStatement(
+            query: """
+            INSERT OR IGNORE INTO maintenance_dirty_buckets (
+                granularity,
+                bucket_start
+            )
+            VALUES (?, ?);
+            """,
+            current: &dirtyBucketInsertStatement,
+            operation: "Prepare dirty aggregate bucket insert"
+        )
+
+        for granularity in [AggregateGranularity.hourly, .daily] {
+            var starts = Set<TimeInterval>()
+            for timestamp in timestamps {
+                starts.insert(
+                    bucketStart(
+                        for: timestamp,
+                        interval: granularity.interval
+                    )
+                )
+            }
+
+            for start in starts {
+                resetStatement(statement)
+                do {
+                    try checkBind(
+                        sqlite3_bind_int(
+                            statement,
+                            1,
+                            Int32(granularity.rawValue)
+                        ),
+                        operation: "Bind dirty bucket granularity"
+                    )
+                    try checkBind(
+                        sqlite3_bind_double(statement, 2, start),
+                        operation: "Bind dirty bucket start"
+                    )
+                    try step(
+                        statement,
+                        operation: "Mark aggregate bucket dirty"
+                    )
+                } catch {
+                    resetStatement(statement)
+                    throw error
+                }
+            }
+        }
+
+        resetStatement(statement)
+    }
+
     private func prepare(
         query: String,
         statement: inout OpaquePointer?,
@@ -637,6 +820,7 @@ final class Database {
                 diskProcessEvents,
                 snapshotID: snapshotID
             )
+            try markBucketsDirty(timestamp: snapshot.timestamp)
             try execute(query: "COMMIT;")
             return snapshotID
         } catch {
@@ -918,117 +1102,117 @@ final class Database {
 
     private func refreshSystemStats(
         table: String,
-        bucketModifier: String
+        bucketStart: TimeInterval,
+        bucketEnd: TimeInterval
     ) throws -> Int {
-        let bucketExpression: String
-        switch bucketModifier {
-        case "hour":
-            bucketExpression = """
-                CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', s.timestamp, 'unixepoch')) AS REAL)
-            """
-        case "day":
-            bucketExpression = """
-                CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', s.timestamp, 'unixepoch')) AS REAL)
-            """
-        default:
-            throw DatabaseOperationError(
-                operation: "Build aggregate bucket",
-                message: "Unsupported bucket modifier \(bucketModifier)"
-            )
-        }
-
         let query = """
-        INSERT OR REPLACE INTO \(table) (
-            bucket_start,
-            sample_count,
-            cpu_avg,
-            cpu_max,
-            memory_avg,
-            memory_max,
-            disk_read_sum,
-            disk_read_avg,
-            disk_read_max,
-            disk_write_sum,
-            disk_write_avg,
-            disk_write_max,
-            network_in_sum,
-            network_in_avg,
-            network_in_max,
-            network_out_sum,
-            network_out_avg,
-            network_out_max,
-            disk_event_count,
-            disk_event_bytes,
-            anomaly_count,
-            dropped_events_sum
-        )
-        SELECT
-            \(bucketExpression) AS bucket_start,
-            COUNT(*) AS sample_count,
-            AVG(s.cpu) AS cpu_avg,
-            MAX(s.cpu) AS cpu_max,
-            AVG(s.memory) AS memory_avg,
-            MAX(s.memory) AS memory_max,
-            SUM(s.disk_read) AS disk_read_sum,
-            AVG(s.disk_read) AS disk_read_avg,
-            MAX(s.disk_read) AS disk_read_max,
-            SUM(s.disk_write) AS disk_write_sum,
-            AVG(s.disk_write) AS disk_write_avg,
-            MAX(s.disk_write) AS disk_write_max,
-            SUM(s.network_in) AS network_in_sum,
-            AVG(s.network_in) AS network_in_avg,
-            MAX(s.network_in) AS network_in_max,
-            SUM(s.network_out) AS network_out_sum,
-            AVG(s.network_out) AS network_out_avg,
-            MAX(s.network_out) AS network_out_max,
-            COALESCE(SUM(d.event_count), 0) AS disk_event_count,
-            COALESCE(SUM(d.event_bytes), 0) AS disk_event_bytes,
-            COALESCE(SUM(e.anomaly_count), 0) AS anomaly_count,
-            COALESCE(SUM(s.dropped_events), 0) AS dropped_events_sum
-        FROM system_samples s
-        LEFT JOIN (
+        WITH
+        bounds(bucket_start, start_ts, end_ts) AS (
+            VALUES (?, ?, ?)
+        ),
+        system_in_bucket AS (
             SELECT
-                snapshot_id,
+                s.id,
+                s.cpu,
+                s.memory,
+                s.disk_read,
+                s.disk_write,
+                s.network_in,
+                s.network_out,
+                s.dropped_events,
+                COALESCE(d.event_count, 0) AS event_count,
+                COALESCE(d.event_bytes, 0) AS event_bytes,
+                COALESCE(e.anomaly_count, 0) AS anomaly_count
+            FROM bounds b
+            LEFT JOIN system_samples s
+                ON s.timestamp >= b.start_ts
+               AND s.timestamp < b.end_ts
+            LEFT JOIN (
+                SELECT
+                    d.snapshot_id,
+                    COUNT(*) AS event_count,
+                    COALESCE(SUM(d.bytes), 0) AS event_bytes
+                FROM disk_process_events d
+                JOIN system_samples linked
+                    ON linked.id = d.snapshot_id
+                WHERE linked.timestamp >= ?
+                  AND linked.timestamp < ?
+                GROUP BY d.snapshot_id
+            ) d ON d.snapshot_id = s.id
+            LEFT JOIN (
+                SELECT
+                    e.snapshot_id,
+                    COUNT(*) AS anomaly_count
+                FROM events e
+                JOIN system_samples linked
+                    ON linked.id = e.snapshot_id
+                WHERE linked.timestamp >= ?
+                  AND linked.timestamp < ?
+                GROUP BY e.snapshot_id
+            ) e ON e.snapshot_id = s.id
+        ),
+        standalone AS (
+            SELECT
                 COUNT(*) AS event_count,
                 COALESCE(SUM(bytes), 0) AS event_bytes
             FROM disk_process_events
-            WHERE snapshot_id IS NOT NULL
-            GROUP BY snapshot_id
-        ) d ON d.snapshot_id = s.id
-        LEFT JOIN (
-            SELECT
-                snapshot_id,
-                COUNT(*) AS anomaly_count
-            FROM events
-            GROUP BY snapshot_id
-        ) e ON e.snapshot_id = s.id
-        GROUP BY bucket_start;
+            WHERE snapshot_id IS NULL
+              AND timestamp >= ?
+              AND timestamp < ?
+        )
+        SELECT
+            b.bucket_start,
+            COUNT(s.id) AS sample_count,
+            COALESCE(AVG(s.cpu), 0) AS cpu_avg,
+            COALESCE(MAX(s.cpu), 0) AS cpu_max,
+            COALESCE(AVG(s.memory), 0) AS memory_avg,
+            COALESCE(MAX(s.memory), 0) AS memory_max,
+            COALESCE(SUM(s.disk_read), 0) AS disk_read_sum,
+            COALESCE(AVG(s.disk_read), 0) AS disk_read_avg,
+            COALESCE(MAX(s.disk_read), 0) AS disk_read_max,
+            COALESCE(SUM(s.disk_write), 0) AS disk_write_sum,
+            COALESCE(AVG(s.disk_write), 0) AS disk_write_avg,
+            COALESCE(MAX(s.disk_write), 0) AS disk_write_max,
+            COALESCE(SUM(s.network_in), 0) AS network_in_sum,
+            COALESCE(AVG(s.network_in), 0) AS network_in_avg,
+            COALESCE(MAX(s.network_in), 0) AS network_in_max,
+            COALESCE(SUM(s.network_out), 0) AS network_out_sum,
+            COALESCE(AVG(s.network_out), 0) AS network_out_avg,
+            COALESCE(MAX(s.network_out), 0) AS network_out_max,
+            COALESCE(SUM(s.event_count), 0) + standalone.event_count
+                AS disk_event_count,
+            COALESCE(SUM(s.event_bytes), 0) + standalone.event_bytes
+                AS disk_event_bytes,
+            COALESCE(SUM(s.anomaly_count), 0) AS anomaly_count,
+            COALESCE(SUM(s.dropped_events), 0) AS dropped_events_sum
+        FROM system_in_bucket s
+        CROSS JOIN bounds b
+        CROSS JOIN standalone
+        GROUP BY b.bucket_start, standalone.event_count, standalone.event_bytes
+        HAVING COUNT(s.id) > 0 OR standalone.event_count > 0;
         """
 
-        return try executeCount(query: query, bindings: [])
+        return try executeCount(
+            query: query,
+            bindings: [
+                .double(bucketStart),
+                .double(bucketStart),
+                .double(bucketEnd),
+                .double(bucketStart),
+                .double(bucketEnd),
+                .double(bucketStart),
+                .double(bucketEnd),
+                .double(bucketStart),
+                .double(bucketEnd)
+            ]
+        )
     }
 
     private func refreshProcessStats(
         table: String,
-        bucketModifier: String
+        bucketStart: TimeInterval,
+        bucketEnd: TimeInterval
     ) throws -> Int {
-        let bucketExpression: String
-        switch bucketModifier {
-        case "hour":
-            bucketExpression = """
-                CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', timestamp, 'unixepoch')) AS REAL)
-            """
-        case "day":
-            bucketExpression = """
-                CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', timestamp, 'unixepoch')) AS REAL)
-            """
-        default:
-            throw DatabaseOperationError(
-                operation: "Build process aggregate bucket",
-                message: "Unsupported bucket modifier \(bucketModifier)"
-            )
-        }
-
         let query = """
         INSERT OR REPLACE INTO \(table) (
             bucket_start,
@@ -1047,7 +1231,7 @@ final class Database {
             disk_write_max
         )
         SELECT
-            \(bucketExpression) AS bucket_start,
+            ? AS bucket_start,
             pid,
             name AS process_name,
             COUNT(*) AS sample_count,
@@ -1062,35 +1246,142 @@ final class Database {
             AVG(disk_write_bytes) AS disk_write_avg,
             MAX(disk_write_bytes) AS disk_write_max
         FROM process_samples
+        WHERE timestamp >= ? AND timestamp < ?
         GROUP BY bucket_start, pid, name;
         """
 
-        return try executeCount(query: query, bindings: [])
+        return try executeCount(
+            query: query,
+            bindings: [
+                .double(bucketStart),
+                .double(bucketStart),
+                .double(bucketEnd)
+            ]
+        )
     }
 
-    private func refreshAggregates() throws -> (
+    private func loadDirtyBuckets(
+        limit: Int
+    ) throws -> [DirtyAggregateBucket] {
+        var statement: OpaquePointer?
+        try prepare(
+            query: """
+            SELECT granularity, bucket_start
+            FROM maintenance_dirty_buckets
+            ORDER BY bucket_start ASC, granularity ASC
+            LIMIT ?;
+            """,
+            statement: &statement,
+            operation: "Read dirty aggregate buckets"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try checkBind(
+            sqlite3_bind_int(statement, 1, Int32(limit)),
+            operation: "Bind dirty aggregate bucket limit"
+        )
+
+        var buckets: [DirtyAggregateBucket] = []
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE {
+                break
+            }
+            guard result == SQLITE_ROW else {
+                throw operationError("Read dirty aggregate buckets")
+            }
+            guard let granularity = AggregateGranularity(
+                rawValue: Int(sqlite3_column_int64(statement, 0))
+            ) else {
+                throw DatabaseOperationError(
+                    operation: "Read dirty aggregate buckets",
+                    message: "unknown aggregate granularity"
+                )
+            }
+            buckets.append(
+                DirtyAggregateBucket(
+                    granularity: granularity,
+                    start: sqlite3_column_double(statement, 1)
+                )
+            )
+        }
+        return buckets
+    }
+
+    private func countDirtyBuckets() throws -> Int {
+        var statement: OpaquePointer?
+        try prepare(
+            query: "SELECT COUNT(*) FROM maintenance_dirty_buckets;",
+            statement: &statement,
+            operation: "Count dirty aggregate buckets"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw operationError("Count dirty aggregate buckets")
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func refreshDirtyBuckets(
+        limit: Int
+    ) throws -> (
         hourlySystem: Int,
         hourlyProcess: Int,
         dailySystem: Int,
-        dailyProcess: Int
+        dailyProcess: Int,
+        processed: Int
     ) {
-        (
-            try refreshSystemStats(
-                table: "hourly_system_stats",
-                bucketModifier: "hour"
-            ),
-            try refreshProcessStats(
-                table: "hourly_process_stats",
-                bucketModifier: "hour"
-            ),
-            try refreshSystemStats(
-                table: "daily_system_stats",
-                bucketModifier: "day"
-            ),
-            try refreshProcessStats(
-                table: "daily_process_stats",
-                bucketModifier: "day"
+        let buckets = try loadDirtyBuckets(limit: limit)
+        var hourlySystem = 0
+        var hourlyProcess = 0
+        var dailySystem = 0
+        var dailyProcess = 0
+
+        for bucket in buckets {
+            let end = bucket.start + bucket.granularity.interval
+            let systemChanges = try refreshSystemStats(
+                table: bucket.granularity.systemTable,
+                bucketStart: bucket.start,
+                bucketEnd: end
             )
+            let processChanges = try refreshProcessStats(
+                table: bucket.granularity.processTable,
+                bucketStart: bucket.start,
+                bucketEnd: end
+            )
+
+            switch bucket.granularity {
+            case .hourly:
+                hourlySystem += systemChanges
+                hourlyProcess += processChanges
+            case .daily:
+                dailySystem += systemChanges
+                dailyProcess += processChanges
+            }
+
+            _ = try executeCount(
+                query: """
+                DELETE FROM maintenance_dirty_buckets
+                WHERE granularity = ? AND bucket_start = ?;
+                """,
+                bindings: [
+                    .integer(Int64(bucket.granularity.rawValue)),
+                    .double(bucket.start)
+                ]
+            )
+        }
+
+        return (
+            hourlySystem,
+            hourlyProcess,
+            dailySystem,
+            dailyProcess,
+            buckets.count
         )
     }
 
@@ -1111,9 +1402,11 @@ final class Database {
         try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
 
         do {
-            // Aggregate before deleting detailed rows. Re-running maintenance
-            // is safe because INSERT OR REPLACE refreshes existing buckets.
-            let refreshed = try refreshAggregates()
+            // Only dirty buckets are recomputed. This keeps the write lock
+            // bounded even when the detailed retention window is large.
+            let refreshed = try refreshDirtyBuckets(
+                limit: Self.maintenanceBucketBatchSize
+            )
 
             let deletedProcessSamples = try executeCount(
                 query: """
@@ -1428,6 +1721,7 @@ final class Database {
         do {
             try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
             try insertDiskProcessEvents(events, snapshotID: snapshotID)
+            try markBucketsDirty(timestamps: events.map(\.timestamp))
             try execute(query: "COMMIT;")
             return events.count
         } catch {
