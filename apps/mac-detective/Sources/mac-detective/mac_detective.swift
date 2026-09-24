@@ -124,6 +124,7 @@ struct MacDetective {
         _ = processCollector.sample()
 
         var previousDroppedEventCount = 0
+        var lastMaintenanceAt = Date.distantPast
 
         while true {
 
@@ -227,6 +228,28 @@ struct MacDetective {
                         "| RAM \(String(format: "%.2f", memoryGB)) GB"
                     )
                 }
+            }
+
+            let maintenanceDate = Date()
+            if maintenanceDate.timeIntervalSince(lastMaintenanceAt) >=
+                database.maintenanceInterval {
+                do {
+                    let report = try database.performMaintenance(
+                        now: maintenanceDate
+                    )
+                    let checkpointed = try database.checkpoint()
+                    if !checkpointed {
+                        print("⚠️ WAL checkpoint incomplet; il sera repris au prochain cycle")
+                    }
+                    if report.remainingDirtyBuckets > 0 {
+                        print(
+                            "ℹ️ Maintenance: \(report.remainingDirtyBuckets) bucket(s) agrégé(s) en attente"
+                        )
+                    }
+                } catch {
+                    print("❌ Database maintenance failed: \(error)")
+                }
+                lastMaintenanceAt = maintenanceDate
             }
         }
     }

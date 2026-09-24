@@ -241,8 +241,9 @@ final class Database {
             """)
 
             try execute(query: """
-                CREATE INDEX IF NOT EXISTS idx_disk_process_events_timestamp
-                ON disk_process_events(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_disk_process_events_standalone_timestamp
+                ON disk_process_events(timestamp)
+                WHERE snapshot_id IS NULL;
             """)
 
             try execute(query: """
@@ -650,6 +651,7 @@ final class Database {
         sqlite3_finalize(processSampleInsertStatement)
         sqlite3_finalize(diskProcessEventInsertStatement)
         sqlite3_finalize(eventInsertStatement)
+        sqlite3_finalize(dirtyBucketInsertStatement)
     }
 
     var journalMode: String {
@@ -1106,6 +1108,30 @@ final class Database {
         bucketEnd: TimeInterval
     ) throws -> Int {
         let query = """
+        INSERT OR REPLACE INTO \(table) (
+            bucket_start,
+            sample_count,
+            cpu_avg,
+            cpu_max,
+            memory_avg,
+            memory_max,
+            disk_read_sum,
+            disk_read_avg,
+            disk_read_max,
+            disk_write_sum,
+            disk_write_avg,
+            disk_write_max,
+            network_in_sum,
+            network_in_avg,
+            network_in_max,
+            network_out_sum,
+            network_out_avg,
+            network_out_max,
+            disk_event_count,
+            disk_event_bytes,
+            anomaly_count,
+            dropped_events_sum
+        )
         WITH
         bounds(bucket_start, start_ts, end_ts) AS (
             VALUES (?, ?, ?)
@@ -1124,7 +1150,8 @@ final class Database {
                 COALESCE(d.event_bytes, 0) AS event_bytes,
                 COALESCE(e.anomaly_count, 0) AS anomaly_count
             FROM bounds b
-            LEFT JOIN system_samples s
+            LEFT JOIN system_samples AS s
+                INDEXED BY idx_system_samples_timestamp
                 ON s.timestamp >= b.start_ts
                AND s.timestamp < b.end_ts
             LEFT JOIN (
@@ -1133,7 +1160,8 @@ final class Database {
                     COUNT(*) AS event_count,
                     COALESCE(SUM(d.bytes), 0) AS event_bytes
                 FROM disk_process_events d
-                JOIN system_samples linked
+                JOIN system_samples AS linked
+                    INDEXED BY idx_system_samples_timestamp
                     ON linked.id = d.snapshot_id
                 WHERE linked.timestamp >= ?
                   AND linked.timestamp < ?
@@ -1144,7 +1172,8 @@ final class Database {
                     e.snapshot_id,
                     COUNT(*) AS anomaly_count
                 FROM events e
-                JOIN system_samples linked
+                JOIN system_samples AS linked
+                    INDEXED BY idx_system_samples_timestamp
                     ON linked.id = e.snapshot_id
                 WHERE linked.timestamp >= ?
                   AND linked.timestamp < ?
@@ -1156,6 +1185,7 @@ final class Database {
                 COUNT(*) AS event_count,
                 COALESCE(SUM(bytes), 0) AS event_bytes
             FROM disk_process_events
+                INDEXED BY idx_disk_process_events_standalone_timestamp
             WHERE snapshot_id IS NULL
               AND timestamp >= ?
               AND timestamp < ?
@@ -1245,7 +1275,7 @@ final class Database {
             SUM(disk_write_bytes) AS disk_write_sum,
             AVG(disk_write_bytes) AS disk_write_avg,
             MAX(disk_write_bytes) AS disk_write_max
-        FROM process_samples
+        FROM process_samples INDEXED BY idx_process_samples_timestamp
         WHERE timestamp >= ? AND timestamp < ?
         GROUP BY bucket_start, pid, name;
         """
@@ -1408,59 +1438,75 @@ final class Database {
                 limit: Self.maintenanceBucketBatchSize
             )
 
-            let deletedProcessSamples = try executeCount(
-                query: """
-                DELETE FROM process_samples
-                WHERE snapshot_id IN (
-                    SELECT id FROM system_samples WHERE timestamp < ?
-                );
-                """,
-                bindings: [.double(detailedCutoff.timeIntervalSince1970)]
-            )
-            let deletedDiskProcessEvents = try executeCount(
-                query: """
-                DELETE FROM disk_process_events
-                WHERE (
-                    snapshot_id IS NULL AND timestamp < ?
-                ) OR snapshot_id IN (
-                    SELECT id FROM system_samples WHERE timestamp < ?
-                );
-                """,
-                bindings: [
-                    .double(detailedCutoff.timeIntervalSince1970),
-                    .double(detailedCutoff.timeIntervalSince1970)
-                ]
-            )
-            let deletedEvents = try executeCount(
-                query: """
-                DELETE FROM events
-                WHERE snapshot_id IN (
-                    SELECT id FROM system_samples WHERE timestamp < ?
-                );
-                """,
-                bindings: [.double(detailedCutoff.timeIntervalSince1970)]
-            )
-            let deletedSystemSamples = try executeCount(
-                query: "DELETE FROM system_samples WHERE timestamp < ?;",
-                bindings: [.double(detailedCutoff.timeIntervalSince1970)]
-            )
+            // Never delete detail that still has an unprocessed aggregate
+            // bucket. On a large backlog, cleanup resumes on the next cycle.
+            let canDeleteExpiredDetails = try countDirtyBuckets() == 0
+            let deletedProcessSamples: Int
+            let deletedDiskProcessEvents: Int
+            let deletedEvents: Int
+            let deletedSystemSamples: Int
+
+            if canDeleteExpiredDetails {
+                deletedProcessSamples = try executeCount(
+                    query: """
+                    DELETE FROM process_samples
+                    WHERE snapshot_id IN (
+                        SELECT id FROM system_samples WHERE timestamp < ?
+                    );
+                    """,
+                    bindings: [.double(detailedCutoff.timeIntervalSince1970)]
+                )
+                deletedDiskProcessEvents = try executeCount(
+                    query: """
+                    DELETE FROM disk_process_events
+                    WHERE (
+                        snapshot_id IS NULL AND timestamp < ?
+                    ) OR snapshot_id IN (
+                        SELECT id FROM system_samples WHERE timestamp < ?
+                    );
+                    """,
+                    bindings: [
+                        .double(detailedCutoff.timeIntervalSince1970),
+                        .double(detailedCutoff.timeIntervalSince1970)
+                    ]
+                )
+                deletedEvents = try executeCount(
+                    query: """
+                    DELETE FROM events
+                    WHERE snapshot_id IN (
+                        SELECT id FROM system_samples WHERE timestamp < ?
+                    );
+                    """,
+                    bindings: [.double(detailedCutoff.timeIntervalSince1970)]
+                )
+                deletedSystemSamples = try executeCount(
+                    query: "DELETE FROM system_samples WHERE timestamp < ?;",
+                    bindings: [.double(detailedCutoff.timeIntervalSince1970)]
+                )
+            } else {
+                deletedProcessSamples = 0
+                deletedDiskProcessEvents = 0
+                deletedEvents = 0
+                deletedSystemSamples = 0
+            }
 
             let deletedHourlySystemStats = try executeCount(
-                query: "DELETE FROM hourly_system_stats WHERE bucket_start < ?;",
+                query: "DELETE FROM hourly_system_stats WHERE bucket_start + 3600 <= ?;",
                 bindings: [.double(hourlyCutoff.timeIntervalSince1970)]
             )
             let deletedHourlyProcessStats = try executeCount(
-                query: "DELETE FROM hourly_process_stats WHERE bucket_start < ?;",
+                query: "DELETE FROM hourly_process_stats WHERE bucket_start + 3600 <= ?;",
                 bindings: [.double(hourlyCutoff.timeIntervalSince1970)]
             )
             let deletedDailySystemStats = try executeCount(
-                query: "DELETE FROM daily_system_stats WHERE bucket_start < ?;",
+                query: "DELETE FROM daily_system_stats WHERE bucket_start + 86400 <= ?;",
                 bindings: [.double(dailyCutoff.timeIntervalSince1970)]
             )
             let deletedDailyProcessStats = try executeCount(
-                query: "DELETE FROM daily_process_stats WHERE bucket_start < ?;",
+                query: "DELETE FROM daily_process_stats WHERE bucket_start + 86400 <= ?;",
                 bindings: [.double(dailyCutoff.timeIntervalSince1970)]
             )
+            let remainingDirtyBuckets = try countDirtyBuckets()
 
             try execute(query: "COMMIT;")
 
@@ -1476,7 +1522,9 @@ final class Database {
                 refreshedHourlySystemStats: refreshed.hourlySystem,
                 refreshedHourlyProcessStats: refreshed.hourlyProcess,
                 refreshedDailySystemStats: refreshed.dailySystem,
-                refreshedDailyProcessStats: refreshed.dailyProcess
+                refreshedDailyProcessStats: refreshed.dailyProcess,
+                processedDirtyBuckets: refreshed.processed,
+                remainingDirtyBuckets: remainingDirtyBuckets
             )
 
             if logWrites {
@@ -1492,8 +1540,26 @@ final class Database {
         }
     }
 
-    func checkpoint() throws {
-        try execute(query: "PRAGMA wal_checkpoint(PASSIVE);")
+    @discardableResult
+    func checkpoint() throws -> Bool {
+        var statement: OpaquePointer?
+        try prepare(
+            query: "PRAGMA wal_checkpoint(PASSIVE);",
+            statement: &statement,
+            operation: "Checkpoint WAL"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw operationError("Checkpoint WAL")
+        }
+
+        let busy = sqlite3_column_int64(statement, 0)
+        let logFrames = sqlite3_column_int64(statement, 1)
+        let checkpointedFrames = sqlite3_column_int64(statement, 2)
+        return busy == 0 && logFrames == checkpointedFrames
     }
 
     private func bindText(
@@ -1563,6 +1629,7 @@ final class Database {
         timestamp: Date
     ) {
         do {
+            try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
             let statement = try cachedStatement(
                 query: """
                 INSERT INTO events (
@@ -1616,11 +1683,14 @@ final class Database {
             )
             try step(statement, operation: "Insert event")
             resetStatement(statement)
+            try markBucketsDirty(timestamp: timestamp)
+            try execute(query: "COMMIT;")
 
             if logWrites {
                 print("⚠️ Event saved to SQLite: \(event.type)")
             }
         } catch {
+            _ = try? execute(query: "ROLLBACK;")
             resetStatement(eventInsertStatement)
             if logWrites {
                 print("❌ Impossible d'enregistrer l'événement: \(error)")
