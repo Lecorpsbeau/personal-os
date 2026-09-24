@@ -1607,6 +1607,23 @@ struct FSUsageCollectorReliabilityTests {
         #expect(collector.droppedEventCount == 0)
     }
 
+    @Test("Stop drains complete output before closing pipes")
+    func testStopDrainsCompleteOutput() {
+        let line = "21:55:20.000001    Read    D=0x1  B=0x100   /dev/disk1   0.000001 R drained.77"
+        let collector = FSUsageCollector(
+            launchConfiguration: shellConfiguration(
+                "printf '%s\\n' '\(line)'; sleep 5"
+            )
+        )
+
+        collector.start()
+        #expect(waitUntil { collector.getBufferedEvents().count == 1 })
+        collector.stopAndDrain()
+
+        #expect(collector.getBufferedEvents().map(\.processName) == ["drained"])
+        #expect(!collector.hasOpenPipes)
+    }
+
     @Test("Launch failure is distinct from a running process")
     func testLaunchFailureState() {
         let missingExecutable = URL(

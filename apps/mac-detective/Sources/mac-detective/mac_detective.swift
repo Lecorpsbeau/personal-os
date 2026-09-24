@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 private let sharedCPUCollector = CPUCollector()
@@ -45,14 +46,9 @@ func getMemoryUsage() -> Double {
         0
     )
 
-    let active =
-        UInt64(stats.active_count) * pageSize
-
-    let wired =
-        UInt64(stats.wire_count) * pageSize
-
-    let compressed =
-        UInt64(stats.compressor_page_count) * pageSize
+    let active = UInt64(stats.active_count) * pageSize
+    let wired = UInt64(stats.wire_count) * pageSize
+    let compressed = UInt64(stats.compressor_page_count) * pageSize
 
     let used = active + wired + compressed
 
@@ -78,177 +74,82 @@ func getMemoryUsage() -> Double {
 struct MacDetective {
 
     static func main() {
-
-        let database = Database()
-
-        let diskCollector = DiskCollector()
-        let networkCollector = NetworkCollector()
-        let processCollector = ProcessCollector()
-        let detector = Detector()
-        let parser = FSUsageParser()
-        parser.test()
-
-        let fsUsageCollector = FSUsageCollector(parser: parser)
-        fsUsageCollector.start()
-
-        let fsUsageStatus = fsUsageCollector.status
-        if fsUsageStatus.permissionDenied {
-            print("⚠️ Permissions fs_usage indisponibles : exécution de sudo -n refusée")
-            if !fsUsageStatus.stderrMessage.isEmpty {
-                print("   \(fsUsageStatus.stderrMessage)")
-            }
-        } else {
-            switch fsUsageStatus.processState {
-            case .launchFailed(let message):
-                print("❌ fs_usage n'a pas pu démarrer : \(message)")
-            case .terminated(let exitCode):
-                print("⚠️ fs_usage s'est terminé avec le code \(exitCode)")
-            case .outputPipeClosed:
-                print("⚠️ Le pipe de sortie fs_usage est fermé")
-            case .stopped, .starting, .running:
-                break
-            }
+        // Install the signal sources before database migration and collector
+        // warmup. The router buffers a signal until the runtime is ready.
+        let signals = DarwinRuntimeSignalController()
+        let signalRouter = RuntimeSignalRouter()
+        signals.install { signal in
+            signalRouter.receive(signal)
         }
 
-        print("")
-        print("Mac Detective — Monitoring")
-        print("--------------------------")
-        print("Sampling every 2 seconds")
-        print("Press Ctrl+C to stop")
-        print("")
+        let fileManager = FileManager.default
+        let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let databaseDirectory = projectRoot
+            .appendingPathComponent("data/database", isDirectory: true)
 
-        // Initialize delta-based collectors.
-        _ = getCPUUsage()
-        _ = diskCollector.sample()
-        _ = networkCollector.sample()
-        _ = processCollector.sample()
-
-        var previousDroppedEventCount = 0
-        var lastMaintenanceAt = Date.distantPast
-
-        while true {
-
-            sleep(2)
-
-            let cpu = getCPUUsage()
-            let memory = getMemoryUsage()
-
-            let disk = diskCollector.sample()
-            let network = networkCollector.sample()
-            let processes = processCollector.sample()
-            let diskEvents = fsUsageCollector.getBufferedEvents()
-            let currentDroppedEventCount = fsUsageCollector.droppedEventCount
-            let droppedEvents = max(
-                0,
-                currentDroppedEventCount - previousDroppedEventCount
+        do {
+            try fileManager.createDirectory(
+                at: databaseDirectory,
+                withIntermediateDirectories: true
             )
+        } catch {
+            print("❌ Impossible de créer le répertoire de données: \(error)")
+            signals.cancel()
+            Darwin.exit(EXIT_FAILURE)
+        }
 
-            let snapshot = SystemSnapshot(
-                timestamp: Date(),
-                cpu: cpu,
-                memory: memory,
-                diskRead: disk.readBytesPerSecond,
-                diskWrite: disk.writeBytesPerSecond,
-                networkIn: network.bytesInPerSecond,
-                networkOut: network.bytesOutPerSecond,
-                processes: processes,
-                droppedEvents: droppedEvents
+        let lockPath = databaseDirectory
+            .appendingPathComponent(".mac-detective.lock")
+            .path
+        let instanceLock: SingleInstanceLock
+        do {
+            instanceLock = try SingleInstanceLock(path: lockPath)
+        } catch {
+            print("❌ Single-instance: \(error)")
+            signals.cancel()
+            Darwin.exit(EXIT_FAILURE)
+        }
+
+        let configuration = RuntimeConfiguration.standard
+        let database = Database(logWrites: false)
+        let collector = LiveSnapshotCollector()
+        let fsUsage: RuntimeFSUsageSource
+        if configuration.fsUsageEnabled {
+            let parser = FSUsageParser()
+            fsUsage = FSUsageRuntimeSource(
+                collector: FSUsageCollector(parser: parser)
             )
+        } else {
+            fsUsage = DisabledFSUsageRuntimeSource()
+        }
 
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "HH:mm:ss"
+        let runtime = MonitoringRuntime(
+            configuration: configuration,
+            collector: collector,
+            fsUsage: fsUsage,
+            detection: DetectorRuntimeAdapter(detector: Detector()),
+            persistence: DatabaseRuntimePersistence(database: database),
+            logger: RuntimeLogger(minimumLevel: configuration.logLevel)
+        )
 
-            print(
-                "\(dateFormatter.string(from: snapshot.timestamp)) | " +
-                "CPU \(String(format: "%.1f", cpu))% | " +
-                "RAM \(String(format: "%.1f", memory))% | " +
-                "Disk ↓ \(String(format: "%.1f", disk.readBytesPerSecond / 1_000_000)) MB/s | " +
-                "Disk ↑ \(String(format: "%.1f", disk.writeBytesPerSecond / 1_000_000)) MB/s"
-            )
+        guard runtime.start() else {
+            signals.cancel()
+            instanceLock.release()
+            Darwin.exit(EXIT_FAILURE)
+        }
 
-            if !diskEvents.isEmpty {
-                let totalBytes = diskEvents.reduce(0) { $0 + $1.bytes }
-                print("   💾 fs_usage: \(diskEvents.count) disk events (\(String(format: "%.1f", Double(totalBytes) / 1_000_000)) MB)")
-            }
+        signalRouter.connect { _ in
+            runtime.requestStop()
+        }
+        runtime.run()
+        signals.cancel()
 
-            if let snapshotID = database.save(
-                snapshot: snapshot,
-                diskProcessEvents: diskEvents
-            ) {
-                previousDroppedEventCount = currentDroppedEventCount
-            fsUsageCollector.acknowledgeBufferedEvents(count: diskEvents.count)
-
-            let topDiskProcesses = database.getTopDiskProcesses(snapshotID: snapshotID, limit: 3)
-            if !topDiskProcesses.isEmpty {
-                print("   💾 Disk activity (fs_usage):")
-                for summary in topDiskProcesses {
-                    print(
-                        "      \(summary.processName) [\(summary.pid)]" +
-                        "  ↓ \(String(format: "%.2f", Double(summary.readBytes) / 1_000_000)) MB" +
-                        "  ↑ \(String(format: "%.2f", Double(summary.writeBytes) / 1_000_000)) MB"
-                    )
-                }
-            }
-
-            let detectedEvents = detector.detect(snapshot: snapshot)
-
-            for event in detectedEvents {
-
-                print(
-                    "⚠️ \(event.type) | " +
-                    "\(event.severity) | " +
-                    "\(event.message)"
-                )
-
-                database.saveEvent(
-                    event,
-                    snapshotID: snapshotID,
-                    timestamp: snapshot.timestamp
-                )
-
-                let topProcesses = database.getTopProcesses(
-                    snapshotID: snapshotID,
-                    limit: 5
-                )
-
-                print("   Top processes at this moment:")
-
-                for process in topProcesses {
-
-                    let memoryGB =
-                        Double(process.memoryBytes) /
-                        1_073_741_824.0
-
-                    print(
-                        "   • \(process.name) " +
-                        "| CPU \(String(format: "%.1f", process.cpuUsage))% " +
-                        "| RAM \(String(format: "%.2f", memoryGB)) GB"
-                    )
-                }
-            }
-            }
-
-            let maintenanceDate = Date()
-            if maintenanceDate.timeIntervalSince(lastMaintenanceAt) >=
-                database.maintenanceInterval {
-                do {
-                    let report = try database.performMaintenance(
-                        now: maintenanceDate
-                    )
-                    let checkpointed = try database.checkpoint()
-                    if !checkpointed {
-                        print("⚠️ WAL checkpoint incomplet; il sera repris au prochain cycle")
-                    }
-                    if report.remainingDirtyBuckets > 0 {
-                        print(
-                            "ℹ️ Maintenance: \(report.remainingDirtyBuckets) bucket(s) agrégé(s) en attente"
-                        )
-                    }
-                    lastMaintenanceAt = maintenanceDate
-                } catch {
-                    print("❌ Database maintenance failed: \(error)")
-                }
-            }
+        // Keep the lock alive until the runtime has fully released resources.
+        instanceLock.release()
+        if case .failed = runtime.state {
+            Darwin.exit(EXIT_FAILURE)
         }
     }
 }

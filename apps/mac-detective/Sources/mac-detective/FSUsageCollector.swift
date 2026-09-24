@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct DiskProcessEvent: Sendable, Equatable {
@@ -6,6 +7,42 @@ struct DiskProcessEvent: Sendable, Equatable {
     let bytes: UInt64
     let processName: String
     let pid: Int32
+    let sequence: UInt64
+
+    init(
+        timestamp: Date,
+        operation: String,
+        bytes: UInt64,
+        processName: String,
+        pid: Int32,
+        sequence: UInt64 = 0
+    ) {
+        self.timestamp = timestamp
+        self.operation = operation
+        self.bytes = bytes
+        self.processName = processName
+        self.pid = pid
+        self.sequence = sequence
+    }
+
+    func withSequence(_ sequence: UInt64) -> DiskProcessEvent {
+        DiskProcessEvent(
+            timestamp: timestamp,
+            operation: operation,
+            bytes: bytes,
+            processName: processName,
+            pid: pid,
+            sequence: sequence
+        )
+    }
+
+    static func == (lhs: DiskProcessEvent, rhs: DiskProcessEvent) -> Bool {
+        lhs.timestamp == rhs.timestamp &&
+            lhs.operation == rhs.operation &&
+            lhs.bytes == rhs.bytes &&
+            lhs.processName == rhs.processName &&
+            lhs.pid == rhs.pid
+    }
 }
 
 enum FSUsageProcessState: Equatable, Sendable {
@@ -51,6 +88,7 @@ final class FSUsageCollector: @unchecked Sendable {
     private let lock = NSLock()
     private let outputLock = NSLock()
     private var eventBuffer: [DiskProcessEvent] = []
+    private var nextSequence: UInt64 = 1
     private let maxBufferSize: Int
     private var droppedEvents = 0
     private var pendingOutput = Data()
@@ -272,18 +310,25 @@ final class FSUsageCollector: @unchecked Sendable {
 
     private func record(event: DiskProcessEvent) {
         var handler: (@Sendable (DiskProcessEvent) -> Void)?
+        let identifiedEvent: DiskProcessEvent
 
         lock.lock()
+        let sequence = nextSequence
+        nextSequence &+= 1
+        if nextSequence == 0 {
+            nextSequence = 1
+        }
+        identifiedEvent = event.withSequence(sequence)
         if eventBuffer.count >= maxBufferSize {
             let overflow = eventBuffer.count - maxBufferSize + 1
             eventBuffer.removeFirst(overflow)
             droppedEvents += overflow
         }
-        eventBuffer.append(event)
+        eventBuffer.append(identifiedEvent)
         handler = eventHandler
         lock.unlock()
 
-        handler?(event)
+        handler?(identifiedEvent)
     }
 
     func drainEvents() -> [DiskProcessEvent] {
@@ -308,6 +353,32 @@ final class FSUsageCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         eventBuffer.removeFirst(min(count, eventBuffer.count))
+    }
+
+    /// Removes only the events represented by the persisted batch. An event
+    /// may already have been evicted after the batch was copied; that is still
+    /// a successful acknowledgement because the persisted copy is safe.
+    @discardableResult
+    func acknowledgeBufferedEvents(_ events: [DiskProcessEvent]) -> Bool {
+        guard !events.isEmpty else {
+            return true
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        for event in events {
+            let index = eventBuffer.firstIndex { bufferedEvent in
+                if event.sequence != 0 || bufferedEvent.sequence != 0 {
+                    return bufferedEvent.sequence == event.sequence
+                }
+                return bufferedEvent == event
+            }
+            if let index {
+                eventBuffer.remove(at: index)
+            }
+        }
+        return true
     }
 
     private func readOutput(pipe: Pipe) {
@@ -389,6 +460,47 @@ final class FSUsageCollector: @unchecked Sendable {
         lock.unlock()
     }
 
+    private func terminateAndWait(_ process: Process) {
+        process.terminate()
+        let deadline = Date().addingTimeInterval(2)
+        while process.isRunning && Date() < deadline {
+            RunLoop.current.run(
+                until: Date().addingTimeInterval(0.01)
+            )
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
+    }
+
+    func stopAndDrain() {
+        lock.lock()
+        let process = self.process
+        let outputPipe = self.outputPipe
+        let errorPipe = self.errorPipe
+        lock.unlock()
+
+        if let process, process.isRunning {
+            terminateAndWait(process)
+        }
+
+        // Let any in-flight readability callback finish before reading the
+        // remaining pipe bytes. The process has already exited, so this is a
+        // final, bounded source quiesce step rather than a new collection.
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        errorPipe?.fileHandleForReading.readabilityHandler = nil
+        outputLock.lock()
+        let remainingOutput = outputPipe?.fileHandleForReading.availableData ?? Data()
+        outputLock.unlock()
+
+        if !remainingOutput.isEmpty {
+            processOutputData(remainingOutput)
+        }
+        finishOutputStream()
+        stop()
+    }
+
     func stop() {
         outputLock.lock()
 
@@ -413,8 +525,7 @@ final class FSUsageCollector: @unchecked Sendable {
         outputLock.unlock()
 
         if let process, process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
+            terminateAndWait(process)
         }
 
         outputPipe?.fileHandleForReading.closeFile()

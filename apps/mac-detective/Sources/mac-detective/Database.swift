@@ -67,6 +67,7 @@ final class Database {
     private static let maintenanceBucketBatchSize = 32
 
     private var database: OpaquePointer?
+    private(set) var isReady = false
     private let retentionPolicy: DatabaseRetentionPolicy
     private let logWrites: Bool
     private let inMemoryDatabase: Bool
@@ -130,8 +131,19 @@ final class Database {
     }
 
     deinit {
+        close()
+    }
+
+    @discardableResult
+    func close() -> Bool {
+        guard database != nil else {
+            return true
+        }
         finalizeCachedStatements()
-        sqlite3_close(database)
+        sqlite3_close_v2(database)
+        database = nil
+        isReady = false
+        return true
     }
 
     // MARK: - Schema and migrations
@@ -141,8 +153,10 @@ final class Database {
         do {
             try configureConnection()
             try migrateSchema()
+            isReady = true
             print("Database schema ready (version \(Self.currentSchemaVersion))")
         } catch {
+            isReady = false
             print("❌ SQLite schema error: \(error)")
         }
     }
@@ -661,6 +675,11 @@ final class Database {
         sqlite3_finalize(diskProcessEventInsertStatement)
         sqlite3_finalize(eventInsertStatement)
         sqlite3_finalize(dirtyBucketInsertStatement)
+        systemSampleInsertStatement = nil
+        processSampleInsertStatement = nil
+        diskProcessEventInsertStatement = nil
+        eventInsertStatement = nil
+        dirtyBucketInsertStatement = nil
     }
 
     var journalMode: String {
@@ -836,7 +855,9 @@ final class Database {
             }
             return snapshotID
         } catch {
-            print("❌ Impossible d'enregistrer le snapshot: \(error)")
+            if logWrites {
+                print("❌ Impossible d'enregistrer le snapshot: \(error)")
+            }
             return nil
         }
     }
@@ -1678,13 +1699,35 @@ final class Database {
         return Int64(value)
     }
 
+    @discardableResult
     func saveEvent(
         _ event: DetectedEvent,
         snapshotID: Int64,
         timestamp: Date
-    ) {
+    ) -> Bool {
         do {
-            try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
+            try saveEventThrowing(
+                event,
+                snapshotID: snapshotID,
+                timestamp: timestamp
+            )
+            return true
+        } catch {
+            if logWrites {
+                print("❌ Impossible d'enregistrer l'événement: \(error)")
+            }
+            return false
+        }
+    }
+
+    func saveEventThrowing(
+        _ event: DetectedEvent,
+        snapshotID: Int64,
+        timestamp: Date
+    ) throws {
+        try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
+
+        do {
             let statement = try cachedStatement(
                 query: """
                 INSERT INTO events (
@@ -1749,9 +1792,7 @@ final class Database {
         } catch {
             _ = try? execute(query: "ROLLBACK;")
             resetStatement(eventInsertStatement)
-            if logWrites {
-                print("❌ Impossible d'enregistrer l'événement: \(error)")
-            }
+            throw error
         }
     }
 
