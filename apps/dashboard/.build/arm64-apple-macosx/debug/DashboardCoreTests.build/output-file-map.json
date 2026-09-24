@@ -1,0 +1,26 @@
+{
+  "": {
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/primary.swiftdeps"
+  },
+  "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardTestSupport.swift": {
+    "dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.d",
+    "object": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.swift.o",
+    "swiftmodule": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport~partial.swiftmodule",
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.swiftdeps",
+    "diagnostics": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.dia"
+  },
+  "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardViewModelTests.swift": {
+    "dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.d",
+    "object": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.swift.o",
+    "swiftmodule": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.swiftdeps",
+    "diagnostics": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.dia"
+  },
+  "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/SQLiteDashboardRepositoryTests.swift": {
+    "dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.d",
+    "object": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.swift.o",
+    "swiftmodule": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.swiftdeps",
+    "diagnostics": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.dia"
+  }
+}

@@ -83,11 +83,20 @@ struct MacDetective {
         }
 
         let fileManager = FileManager.default
-        let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let databaseDirectory = projectRoot
-            .appendingPathComponent("data/database", isDirectory: true)
+        let environment = ProcessInfo.processInfo.environment
+        let databaseURL: URL
+        let databaseDirectory: URL
+        if let configuredDatabasePath = environment["MAC_DETECTIVE_DATABASE"] {
+            databaseURL = URL(fileURLWithPath: configuredDatabasePath)
+            databaseDirectory = databaseURL.deletingLastPathComponent()
+        } else {
+            let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            databaseDirectory = projectRoot
+                .appendingPathComponent("data/database", isDirectory: true)
+            databaseURL = databaseDirectory.appendingPathComponent("mac_detective.sqlite")
+        }
 
         do {
             try fileManager.createDirectory(
@@ -113,7 +122,16 @@ struct MacDetective {
         }
 
         let configuration = RuntimeConfiguration.standard
-        let database = Database(logWrites: false)
+        let database = Database(
+            databasePath: databaseURL.path,
+            logWrites: false
+        )
+        let statusURL = environment["MAC_DETECTIVE_RUNTIME_STATUS"]
+            .map { URL(fileURLWithPath: $0) }
+            ?? databaseDirectory.appendingPathComponent(
+                ".mac-detective-runtime-status.json"
+            )
+        let statusStore = RuntimeStatusFileStore(url: statusURL)
         let collector = LiveSnapshotCollector()
         let fsUsage: RuntimeFSUsageSource
         if configuration.fsUsageEnabled {
@@ -131,7 +149,8 @@ struct MacDetective {
             fsUsage: fsUsage,
             detection: DetectorRuntimeAdapter(detector: Detector()),
             persistence: DatabaseRuntimePersistence(database: database),
-            logger: RuntimeLogger(minimumLevel: configuration.logLevel)
+            logger: RuntimeLogger(minimumLevel: configuration.logLevel),
+            statusReporter: statusStore
         )
 
         guard runtime.start() else {

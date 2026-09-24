@@ -850,6 +850,46 @@ struct MonitoringRuntimeTests {
         #expect(debugSink.entries.first?.context.snapshotID == 42)
     }
 
+    @Test("Runtime status file publishes a readable snapshot")
+    func testRuntimeStatusFile() throws {
+        let directory = NSTemporaryDirectory() + "runtime-status-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let url = URL(fileURLWithPath: directory)
+            .appendingPathComponent("status.json")
+        let store = RuntimeStatusFileStore(url: url)
+        let date = Date(timeIntervalSince1970: 1_900_000_000)
+        store.publish(
+            RuntimeStatusPayload(
+                version: 1,
+                state: "running",
+                updatedAt: date,
+                cyclesExecuted: 3,
+                lastCycleAt: date,
+                lastSuccessfulPersistenceAt: date,
+                lastMaintenanceAt: nil,
+                fsUsage: RuntimeFSUsageStatusPayload(
+                    state: "running",
+                    diagnostic: nil,
+                    permissionDenied: false,
+                    stderr: nil,
+                    droppedEvents: 1
+                )
+            )
+        )
+
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payload = try decoder.decode(RuntimeStatusPayload.self, from: data)
+        #expect(payload.state == "running")
+        #expect(payload.cyclesExecuted == 3)
+        #expect(payload.fsUsage?.droppedEvents == 1)
+    }
+
     @Test("Runtime configuration validates defaults and custom intervals")
     func testConfiguration() {
         let standard = RuntimeConfiguration.standard

@@ -1,0 +1,932 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.xctest/Contents/MacOS/PersonalOSDashboardPackageTests",
+      "packagePath" : "/Users/augustin/Projects/personal-os/apps/dashboard",
+      "productName" : "PersonalOSDashboardPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.DashboardCore-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/sources",
+      "importPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardRepository.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardViewModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/SQLiteDashboardRepository.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "DashboardCore",
+      "moduleOutputPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCore.swiftmodule",
+      "objects" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardModels.swift.o",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardRepository.swift.o",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardViewModel.swift.o",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/SQLiteDashboardRepository.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/include/DashboardCore-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "dashboard"
+      ],
+      "outputFileMapPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardRepository.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardViewModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/SQLiteDashboardRepository.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCore.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardModels.swift",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardRepository.swift",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardViewModel.swift",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/SQLiteDashboardRepository.swift"
+      ],
+      "tempsPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.DashboardCoreTests-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/sources",
+      "importPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardTestSupport.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardViewModelTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/SQLiteDashboardRepositoryTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "DashboardCoreTests",
+      "moduleOutputPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCoreTests.swiftmodule",
+      "objects" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.swift.o",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.swift.o",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "dashboard"
+      ],
+      "outputFileMapPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCoreTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardTestSupport.swift",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardViewModelTests.swift",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/SQLiteDashboardRepositoryTests.swift"
+      ],
+      "tempsPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.PersonalOSDashboard-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/sources",
+      "importPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/DashboardView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/PersonalOSDashboardApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "PersonalOSDashboard",
+      "moduleOutputPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/PersonalOSDashboard.swiftmodule",
+      "objects" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.swift.o",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "PersonalOSDashboard_main",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "dashboard"
+      ],
+      "outputFileMapPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/PersonalOSDashboard.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/DashboardView.swift",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/PersonalOSDashboardApp.swift"
+      ],
+      "tempsPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.PersonalOSDashboardPackageTests-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/sources",
+      "importPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/DashboardCoreTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "PersonalOSDashboardPackageTests",
+      "moduleOutputPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/PersonalOSDashboardPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/include/PersonalOSDashboardPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "dashboard"
+      ],
+      "outputFileMapPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules/PersonalOSDashboardPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "DashboardCore" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "DashboardCore",
+      "-package-name",
+      "dashboard",
+      "-c",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardModels.swift",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardRepository.swift",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardViewModel.swift",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/SQLiteDashboardRepository.swift",
+      "-I",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/include/DashboardCore-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "dashboard",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "DashboardCoreTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "DashboardCoreTests",
+      "-package-name",
+      "dashboard",
+      "-c",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardTestSupport.swift",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardViewModelTests.swift",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/SQLiteDashboardRepositoryTests.swift",
+      "-I",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "dashboard",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "PersonalOSDashboard" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "PersonalOSDashboard",
+      "-package-name",
+      "dashboard",
+      "-c",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/DashboardView.swift",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/PersonalOSDashboardApp.swift",
+      "-I",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "PersonalOSDashboard_main",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "dashboard",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "PersonalOSDashboardPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "PersonalOSDashboardPackageTests",
+      "-package-name",
+      "dashboard",
+      "-c",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/include/PersonalOSDashboardPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "dashboard",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "DashboardCore" : [
+
+    ],
+    "DashboardCoreTests" : [
+      "DashboardCore"
+    ],
+    "PersonalOSDashboard" : [
+      "DashboardCore"
+    ],
+    "PersonalOSDashboardPackageTests" : [
+      "DashboardCoreTests",
+      "DashboardCore"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardRepository.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/DashboardViewModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/DashboardCore/SQLiteDashboardRepository.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/sources"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardTestSupport.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/DashboardViewModelTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Tests/DashboardCoreTests/SQLiteDashboardRepositoryTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/sources"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard-entitlement.plist"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/DashboardView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/PersonalOSDashboardApp.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/sources"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardRepository.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardViewModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/SQLiteDashboardRepository.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.product/Objects.LinkFileList"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/sources"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardRepository.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/DashboardViewModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/SQLiteDashboardRepository.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardTestSupport.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/DashboardViewModelTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCoreTests.build/SQLiteDashboardRepositoryTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

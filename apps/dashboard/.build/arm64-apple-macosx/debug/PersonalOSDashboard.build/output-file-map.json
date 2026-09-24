@@ -1,0 +1,19 @@
+{
+  "": {
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/primary.swiftdeps"
+  },
+  "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/DashboardView.swift": {
+    "dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.d",
+    "object": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.swift.o",
+    "swiftmodule": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView~partial.swiftmodule",
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.swiftdeps",
+    "diagnostics": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/DashboardView.dia"
+  },
+  "/Users/augustin/Projects/personal-os/apps/dashboard/Sources/PersonalOSDashboard/PersonalOSDashboardApp.swift": {
+    "dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.d",
+    "object": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.swift.o",
+    "swiftmodule": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.swiftdeps",
+    "diagnostics": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboard.build/PersonalOSDashboardApp.dia"
+  }
+}

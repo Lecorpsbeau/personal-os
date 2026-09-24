@@ -1,0 +1,3 @@
+module DashboardCore {
+    header "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/DashboardCore.build/include/DashboardCore-Swift.h"
+}

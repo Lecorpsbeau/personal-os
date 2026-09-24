@@ -123,6 +123,7 @@ extension RuntimeSnapshotCollector {
 protocol RuntimeFSUsageSource: AnyObject {
     var droppedEventCount: Int { get }
     var diagnostic: String? { get }
+    var stateName: String? { get }
 
     func start() throws
     func stop()
@@ -133,6 +134,7 @@ protocol RuntimeFSUsageSource: AnyObject {
 
 extension RuntimeFSUsageSource {
     var diagnostic: String? { nil }
+    var stateName: String? { nil }
 
     func acknowledgeBufferedEvents(_ events: [DiskProcessEvent]) -> Bool {
         acknowledgeBufferedEvents(count: events.count)
@@ -239,6 +241,23 @@ final class FSUsageRuntimeSource: RuntimeFSUsageSource {
             return "output pipe closed"
         case .starting, .running, .stopped:
             return nil
+        }
+    }
+
+    var stateName: String? {
+        switch collector.status.processState {
+        case .starting:
+            return "starting"
+        case .running:
+            return "running"
+        case .launchFailed:
+            return "launchFailed"
+        case .terminated:
+            return "terminated"
+        case .outputPipeClosed:
+            return "outputPipeClosed"
+        case .stopped:
+            return "stopped"
         }
     }
 
@@ -364,6 +383,7 @@ final class MonitoringRuntime {
     private let waiter: RuntimeWaiter
     private let clock: RuntimeClock
     private let logger: RuntimeLogging
+    private let statusReporter: RuntimeStatusReporting
 
     private let condition = NSCondition()
     private var stateValue: RuntimeState = .stopped
@@ -390,7 +410,8 @@ final class MonitoringRuntime {
         persistence: RuntimePersistence,
         waiter: RuntimeWaiter = InterruptibleRuntimeWaiter(),
         clock: RuntimeClock = SystemRuntimeClock(),
-        logger: RuntimeLogging = RuntimeLogger()
+        logger: RuntimeLogging = RuntimeLogger(),
+        statusReporter: RuntimeStatusReporting = NoopRuntimeStatusReporter()
     ) {
         self.configuration = configuration
         self.collector = collector
@@ -400,6 +421,7 @@ final class MonitoringRuntime {
         self.waiter = waiter
         self.clock = clock
         self.logger = logger
+        self.statusReporter = statusReporter
     }
 
     var state: RuntimeState {
@@ -463,6 +485,7 @@ final class MonitoringRuntime {
                     )
                 )
             }
+            publishStatus(for: .running)
             return true
         } catch {
             let runtimeError: RuntimeError
@@ -568,6 +591,7 @@ final class MonitoringRuntime {
                 context: RuntimeLogContext(timestamp: clock.now)
             )
         }
+        publishStatus(for: .stopping)
     }
 
     func stop() {
@@ -617,6 +641,47 @@ final class MonitoringRuntime {
         return stopRequested || stateValue == .stopping
     }
 
+    private func publishStatus(for requestedState: RuntimeState? = nil) {
+        condition.lock()
+        let state = requestedState ?? stateValue
+        let metrics = self.metrics
+        condition.unlock()
+
+        let diagnostic = self.fsUsage.diagnostic
+        let fsUsage = RuntimeFSUsageStatusPayload(
+            state: self.fsUsage.stateName,
+            diagnostic: diagnostic,
+            permissionDenied: diagnostic?.lowercased().contains("permission") == true,
+            stderr: diagnostic,
+            droppedEvents: self.fsUsage.droppedEventCount
+        )
+        statusReporter.publish(
+            RuntimeStatusPayload(
+                version: 1,
+                state: stateName(for: state),
+                updatedAt: clock.now,
+                cyclesExecuted: metrics.cyclesExecuted,
+                lastCycleAt: metrics.lastCycleAt,
+                lastSuccessfulPersistenceAt: metrics.lastSuccessfulPersistenceAt,
+                lastMaintenanceAt: metrics.lastMaintenanceAt,
+                fsUsage: fsUsage
+            )
+        )
+    }
+
+    private func stateName(for state: RuntimeState) -> String {
+        switch state {
+        case .stopped:
+            return "stopped"
+        case .running:
+            return "running"
+        case .stopping:
+            return "stopping"
+        case .failed:
+            return "failed"
+        }
+    }
+
     private func runCycle() -> RuntimeError? {
         condition.lock()
         guard !stopRequested, stateValue == .running else {
@@ -639,6 +704,7 @@ final class MonitoringRuntime {
             metrics.lastCycleAt = finishedAt
             metrics.lastCycleDuration = finishedAt.timeIntervalSince(startedAt)
             condition.unlock()
+            publishStatus()
             logger.log(
                 .debug,
                 "Monitoring cycle finished",
@@ -1225,6 +1291,7 @@ final class MonitoringRuntime {
         stateValue = effectiveFinalState
         condition.broadcast()
         condition.unlock()
+        publishStatus(for: effectiveFinalState)
 
         logger.log(
             effectiveFinalState.isFailure ? .error : .info,

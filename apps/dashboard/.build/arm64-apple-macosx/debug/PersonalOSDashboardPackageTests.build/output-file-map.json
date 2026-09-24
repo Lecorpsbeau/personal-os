@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/primary.swiftdeps"
+  },
+  "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.d",
+    "object": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/runner.dia"
+  }
+}

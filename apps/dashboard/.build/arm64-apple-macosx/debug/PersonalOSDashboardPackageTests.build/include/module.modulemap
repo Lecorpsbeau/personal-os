@@ -1,0 +1,3 @@
+module PersonalOSDashboardPackageTests {
+    header "/Users/augustin/Projects/personal-os/apps/dashboard/.build/arm64-apple-macosx/debug/PersonalOSDashboardPackageTests.build/include/PersonalOSDashboardPackageTests-Swift.h"
+}
