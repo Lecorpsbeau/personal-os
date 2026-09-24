@@ -63,7 +63,7 @@ private struct DirtyAggregateBucket {
 
 final class Database {
 
-    private static let currentSchemaVersion: Int32 = 3
+    private static let currentSchemaVersion: Int32 = 4
     private static let maintenanceBucketBatchSize = 32
 
     private var database: OpaquePointer?
@@ -231,6 +231,11 @@ final class Database {
             try createMaintenanceTable()
 
             try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_maintenance_dirty_buckets_bucket_start
+                ON maintenance_dirty_buckets(bucket_start, granularity);
+            """)
+
+            try execute(query: """
                 CREATE INDEX IF NOT EXISTS idx_system_samples_timestamp
                 ON system_samples(timestamp);
             """)
@@ -244,6 +249,10 @@ final class Database {
                 CREATE INDEX IF NOT EXISTS idx_disk_process_events_standalone_timestamp
                 ON disk_process_events(timestamp)
                 WHERE snapshot_id IS NULL;
+            """)
+
+            try execute(query: """
+                DROP INDEX IF EXISTS idx_disk_process_events_timestamp;
             """)
 
             try execute(query: """
@@ -728,6 +737,34 @@ final class Database {
         }
 
         resetStatement(statement)
+    }
+
+    private func snapshotTimestamp(
+        for snapshotID: Int64
+    ) throws -> Date {
+        var statement: OpaquePointer?
+        try prepare(
+            query: "SELECT timestamp FROM system_samples WHERE id = ?;",
+            statement: &statement,
+            operation: "Read linked snapshot timestamp"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try checkBind(
+            sqlite3_bind_int64(statement, 1, snapshotID),
+            operation: "Bind linked snapshot ID"
+        )
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw DatabaseOperationError(
+                operation: "Read linked snapshot timestamp",
+                message: "snapshot \(snapshotID) does not exist"
+            )
+        }
+        return Date(
+            timeIntervalSince1970: sqlite3_column_double(statement, 0)
+        )
     }
 
     private func prepare(
@@ -1298,6 +1335,7 @@ final class Database {
             query: """
             SELECT granularity, bucket_start
             FROM maintenance_dirty_buckets
+                INDEXED BY idx_maintenance_dirty_buckets_bucket_start
             ORDER BY bucket_start ASC, granularity ASC
             LIMIT ?;
             """,
@@ -1340,10 +1378,19 @@ final class Database {
         return buckets
     }
 
-    private func countDirtyBuckets() throws -> Int {
+    private func countDirtyBuckets(
+        limit: Int = Database.maintenanceBucketBatchSize + 1
+    ) throws -> Int {
         var statement: OpaquePointer?
         try prepare(
-            query: "SELECT COUNT(*) FROM maintenance_dirty_buckets;",
+            query: """
+            SELECT COUNT(*)
+            FROM (
+                SELECT 1
+                FROM maintenance_dirty_buckets
+                LIMIT ?
+            );
+            """,
             statement: &statement,
             operation: "Count dirty aggregate buckets"
         )
@@ -1351,6 +1398,10 @@ final class Database {
             sqlite3_finalize(statement)
         }
 
+        try checkBind(
+            sqlite3_bind_int(statement, 1, Int32(limit)),
+            operation: "Bind dirty aggregate count limit"
+        )
         guard sqlite3_step(statement) == SQLITE_ROW else {
             throw operationError("Count dirty aggregate buckets")
         }
@@ -1428,6 +1479,10 @@ final class Database {
             afterDays: retentionPolicy.dailyRetentionDays,
             now: now
         )
+        let hourlyBucketCutoff =
+            hourlyCutoff.timeIntervalSince1970 - 3_600
+        let dailyBucketCutoff =
+            dailyCutoff.timeIntervalSince1970 - 86_400
 
         try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
 
@@ -1491,20 +1546,20 @@ final class Database {
             }
 
             let deletedHourlySystemStats = try executeCount(
-                query: "DELETE FROM hourly_system_stats WHERE bucket_start + 3600 <= ?;",
-                bindings: [.double(hourlyCutoff.timeIntervalSince1970)]
+                query: "DELETE FROM hourly_system_stats WHERE bucket_start <= ?;",
+                bindings: [.double(hourlyBucketCutoff)]
             )
             let deletedHourlyProcessStats = try executeCount(
-                query: "DELETE FROM hourly_process_stats WHERE bucket_start + 3600 <= ?;",
-                bindings: [.double(hourlyCutoff.timeIntervalSince1970)]
+                query: "DELETE FROM hourly_process_stats WHERE bucket_start <= ?;",
+                bindings: [.double(hourlyBucketCutoff)]
             )
             let deletedDailySystemStats = try executeCount(
-                query: "DELETE FROM daily_system_stats WHERE bucket_start + 86400 <= ?;",
-                bindings: [.double(dailyCutoff.timeIntervalSince1970)]
+                query: "DELETE FROM daily_system_stats WHERE bucket_start <= ?;",
+                bindings: [.double(dailyBucketCutoff)]
             )
             let deletedDailyProcessStats = try executeCount(
-                query: "DELETE FROM daily_process_stats WHERE bucket_start + 86400 <= ?;",
-                bindings: [.double(dailyCutoff.timeIntervalSince1970)]
+                query: "DELETE FROM daily_process_stats WHERE bucket_start <= ?;",
+                bindings: [.double(dailyBucketCutoff)]
             )
             let remainingDirtyBuckets = try countDirtyBuckets()
 
@@ -1683,7 +1738,9 @@ final class Database {
             )
             try step(statement, operation: "Insert event")
             resetStatement(statement)
-            try markBucketsDirty(timestamp: timestamp)
+            try markBucketsDirty(
+                timestamp: try snapshotTimestamp(for: snapshotID)
+            )
             try execute(query: "COMMIT;")
 
             if logWrites {
@@ -1791,7 +1848,13 @@ final class Database {
         do {
             try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
             try insertDiskProcessEvents(events, snapshotID: snapshotID)
-            try markBucketsDirty(timestamps: events.map(\.timestamp))
+            if let snapshotID {
+                try markBucketsDirty(
+                    timestamp: try snapshotTimestamp(for: snapshotID)
+                )
+            } else {
+                try markBucketsDirty(timestamps: events.map(\.timestamp))
+            }
             try execute(query: "COMMIT;")
             return events.count
         } catch {

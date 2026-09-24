@@ -171,14 +171,11 @@ struct MacDetective {
                 print("   💾 fs_usage: \(diskEvents.count) disk events (\(String(format: "%.1f", Double(totalBytes) / 1_000_000)) MB)")
             }
 
-            guard let snapshotID = database.save(
+            if let snapshotID = database.save(
                 snapshot: snapshot,
                 diskProcessEvents: diskEvents
-            ) else {
-                continue
-            }
-
-            previousDroppedEventCount = currentDroppedEventCount
+            ) {
+                previousDroppedEventCount = currentDroppedEventCount
             fsUsageCollector.acknowledgeBufferedEvents(count: diskEvents.count)
 
             let topDiskProcesses = database.getTopDiskProcesses(snapshotID: snapshotID, limit: 3)
@@ -229,6 +226,7 @@ struct MacDetective {
                     )
                 }
             }
+            }
 
             let maintenanceDate = Date()
             if maintenanceDate.timeIntervalSince(lastMaintenanceAt) >=
@@ -246,10 +244,10 @@ struct MacDetective {
                             "ℹ️ Maintenance: \(report.remainingDirtyBuckets) bucket(s) agrégé(s) en attente"
                         )
                     }
+                    lastMaintenanceAt = maintenanceDate
                 } catch {
                     print("❌ Database maintenance failed: \(error)")
                 }
-                lastMaintenanceAt = maintenanceDate
             }
         }
     }

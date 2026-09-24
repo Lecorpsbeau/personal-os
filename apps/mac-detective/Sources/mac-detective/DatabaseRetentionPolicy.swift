@@ -50,6 +50,7 @@ struct DatabaseMaintenanceReport: Equatable, Sendable {
     let refreshedDailySystemStats: Int
     let refreshedDailyProcessStats: Int
     let processedDirtyBuckets: Int
+    // Capped at the next maintenance batch size plus one; zero means empty.
     let remainingDirtyBuckets: Int
 
     init(
