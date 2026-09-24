@@ -2,30 +2,7 @@ import Charts
 import SwiftUI
 import DashboardCore
 
-private enum DashboardSection: String, CaseIterable, Identifiable {
-    case overview
-    case history
-    case processes
-    case events
-    case diagnostics
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .overview:
-            return "Overview"
-        case .history:
-            return "History"
-        case .processes:
-            return "Processes"
-        case .events:
-            return "Events"
-        case .diagnostics:
-            return "Diagnostics"
-        }
-    }
-
+private extension DashboardSection {
     var systemImage: String {
         switch self {
         case .overview:
@@ -78,9 +55,12 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Personal OS")
                     .font(.title2.weight(.semibold))
-                Text("Local monitoring overview")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("Local monitoring overview")
+                    FreshnessBadge(state: viewModel.freshness)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
             Spacer()
             Picker("Période", selection: $viewModel.selectedRange) {
@@ -105,25 +85,51 @@ struct DashboardView: View {
     @ViewBuilder
     private var content: some View {
         if let snapshot = viewModel.snapshot {
-            switch selectedSection ?? .overview {
-            case .overview:
-                OverviewPanel(snapshot: snapshot)
-            case .history:
-                HistoryPanel(snapshot: snapshot)
-            case .processes:
-                ProcessesPanel(snapshot: snapshot)
-            case .events:
-                EventsPanel(snapshot: snapshot)
-            case .diagnostics:
-                DiagnosticsPanel(snapshot: snapshot)
+            if selectedSection == .overview,
+               snapshot.overview == .noData,
+               snapshot.history.isEmpty {
+                NoDataView(
+                    title: viewModel.state.title,
+                    message: emptyStateMessage(for: viewModel.state)
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                switch selectedSection ?? .overview {
+                case .overview:
+                    OverviewPanel(
+                        snapshot: snapshot,
+                        freshness: viewModel.freshness
+                    )
+                case .history:
+                    HistoryPanel(snapshot: snapshot)
+                case .processes:
+                    ProcessesPanel(snapshot: snapshot)
+                case .events:
+                    EventsPanel(snapshot: snapshot)
+                case .diagnostics:
+                    DiagnosticsPanel(
+                        snapshot: snapshot,
+                        freshness: viewModel.freshness,
+                        errorMessage: viewModel.lastError,
+                        uxState: viewModel.state
+                    )
+                }
             }
+        } else if selectedSection == .diagnostics {
+            DiagnosticsUnavailablePanel(
+                freshness: viewModel.freshness,
+                uxState: viewModel.state,
+                errorMessage: viewModel.lastError,
+                databasePath: viewModel.databasePath,
+                schemaVersion: viewModel.schemaVersion
+            )
         } else if viewModel.isRefreshing {
             ProgressView("Lecture des données locales…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             NoDataView(
-                title: "Aucune donnée",
-                message: "Le dashboard n’a pas encore lu de snapshots mac-detective."
+                title: viewModel.state.title,
+                message: emptyStateMessage(for: viewModel.state)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -132,6 +138,7 @@ struct DashboardView: View {
 
 private struct OverviewPanel: View {
     let snapshot: DashboardSnapshot
+    let freshness: DashboardFreshness
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -187,7 +194,10 @@ private struct OverviewPanel: View {
                     )
                 }
 
-                RuntimeStrip(snapshot: snapshot)
+                RuntimeStrip(
+                    snapshot: snapshot,
+                    freshness: freshness
+                )
 
                 Text(
                     "Valeurs affichées uniquement si elles existent dans SQLite; "
@@ -202,13 +212,26 @@ private struct OverviewPanel: View {
 
 private struct RuntimeStrip: View {
     let snapshot: DashboardSnapshot
+    let freshness: DashboardFreshness
 
     var body: some View {
         GroupBox("Runtime") {
-            HStack(spacing: 24) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 145), spacing: 18)],
+                alignment: .leading,
+                spacing: 12
+            ) {
                 RuntimeValue(
                     title: "État",
                     value: runtimeStateText(snapshot.runtime)
+                )
+                RuntimeValue(
+                    title: "Freshness",
+                    value: freshness.title
+                )
+                RuntimeValue(
+                    title: "Last update",
+                    value: snapshot.overview.latestTimestamp.map(formatDate) ?? "No data"
                 )
                 RuntimeValue(
                     title: "Cycles",
@@ -219,15 +242,14 @@ private struct RuntimeStrip: View {
                     value: snapshot.runtime.payload?.lastCycleAt.map(formatDate) ?? "Inconnu"
                 )
                 RuntimeValue(
-                    title: "Persistence",
+                    title: "Last persistence",
                     value: snapshot.runtime.payload?.lastSuccessfulPersistenceAt.map(formatDate) ?? "Inconnu"
                 )
                 RuntimeValue(
-                    title: "Maintenance",
+                    title: "Last maintenance",
                     value: snapshot.runtime.payload?.lastMaintenanceAt.map(formatDate) ?? "Inconnu"
                 )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -338,42 +360,49 @@ private struct ProcessesPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                RankingGroup(title: "CPU", rankings: snapshot.rankings.cpu, value: { formattedCPU($0) })
-                RankingGroup(title: "RAM", rankings: snapshot.rankings.memory, value: { formattedMemory($0) })
-                RankingGroup(title: "Disk I/O", rankings: snapshot.rankings.disk, value: { formattedDisk($0) })
+                ProcessRankingTable(
+                    title: "CPU",
+                    rankings: snapshot.rankings.cpu,
+                    kind: .cpu
+                )
+                ProcessRankingTable(
+                    title: "RAM",
+                    rankings: snapshot.rankings.memory,
+                    kind: .memory
+                )
+                ProcessRankingTable(
+                    title: "Disk",
+                    rankings: snapshot.rankings.disk,
+                    kind: .disk
+                )
             }
         }
     }
 }
 
-private struct RankingGroup: View {
+private enum ProcessRankingKind {
+    case cpu
+    case memory
+    case disk
+}
+
+private struct ProcessRankingTable: View {
     let title: String
     let rankings: [ProcessRanking]
-    let value: (ProcessRanking) -> String
+    let kind: ProcessRankingKind
 
     var body: some View {
         GroupBox(title) {
             if rankings.isEmpty {
-                Text("No data")
+                Text("No process data")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 10)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(rankings.enumerated()), id: \.element.id) { index, ranking in
-                        HStack {
-                            Text("\(index + 1)")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 24, alignment: .trailing)
-                            Text(ranking.name)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Text("PID \(ranking.pid)")
-                                .foregroundStyle(.secondary)
-                            Text(value(ranking))
-                                .font(.body.monospacedDigit())
-                                .frame(width: 150, alignment: .trailing)
-                        }
-                        .padding(.vertical, 7)
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    ForEach(rankings) { ranking in
+                        row(ranking)
                         if ranking.id != rankings.last?.id {
                             Divider()
                         }
@@ -382,45 +411,118 @@ private struct RankingGroup: View {
             }
         }
     }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("PID")
+                .frame(width: 70, alignment: .leading)
+            Text("Process")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            switch kind {
+            case .cpu:
+                Text("Usage")
+                    .frame(width: 100, alignment: .trailing)
+            case .memory:
+                Text("Memory")
+                    .frame(width: 120, alignment: .trailing)
+            case .disk:
+                Text("Read")
+                    .frame(width: 90, alignment: .trailing)
+                Text("Write")
+                    .frame(width: 90, alignment: .trailing)
+                Text("Total")
+                    .frame(width: 100, alignment: .trailing)
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 7)
+    }
+
+    @ViewBuilder
+    private func row(_ ranking: ProcessRanking) -> some View {
+        HStack(spacing: 10) {
+            Text("\(ranking.pid)")
+                .font(.body.monospacedDigit())
+                .frame(width: 70, alignment: .leading)
+            Text(ranking.name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            switch kind {
+            case .cpu:
+                Text(formattedCPU(ranking))
+                    .font(.body.monospacedDigit())
+                    .frame(width: 100, alignment: .trailing)
+            case .memory:
+                Text(formattedMemory(ranking))
+                    .font(.body.monospacedDigit())
+                    .frame(width: 120, alignment: .trailing)
+            case .disk:
+                Text(formattedDiskRate(ranking.diskReadBytesPerSecond))
+                    .font(.body.monospacedDigit())
+                    .frame(width: 90, alignment: .trailing)
+                Text(formattedDiskRate(ranking.diskWriteBytesPerSecond))
+                    .font(.body.monospacedDigit())
+                    .frame(width: 90, alignment: .trailing)
+                Text(formattedDiskTotal(ranking.diskTotalBytes))
+                    .font(.body.monospacedDigit())
+                    .frame(width: 100, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 7)
+    }
 }
 
 private struct EventsPanel: View {
     let snapshot: DashboardSnapshot
 
     var body: some View {
-        GroupBox("Événements récents") {
-            if snapshot.events.isEmpty {
-                Text("No data")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 12)
-            } else {
-                LazyVStack(spacing: 0) {
-                    ForEach(snapshot.events) { event in
-                        HStack(alignment: .top, spacing: 12) {
-                            SeverityBadge(severity: event.severity)
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack {
-                                    Text(event.type)
-                                        .font(.headline)
-                                    Text(formatDate(event.timestamp))
+        ScrollView {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Événements récents")
+                            .font(.headline)
+                        Spacer()
+                        Text("plus récents d’abord")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if snapshot.events.isEmpty {
+                        Text("No data")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 12)
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(snapshot.events) { event in
+                                HStack(alignment: .top, spacing: 12) {
+                                    SeverityBadge(severity: event.severity)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text(event.type)
+                                                .font(.headline)
+                                            Text(formatDate(event.timestamp))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text(event.message)
+                                            .foregroundStyle(.primary)
+                                        HStack(spacing: 12) {
+                                            Text("snapshot \(event.snapshotID.map(String.init) ?? "—")")
+                                            Text("value \(formatNumber(event.value))")
+                                        }
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
                                 }
-                                Text(event.message)
-                                    .foregroundStyle(.primary)
-                                HStack(spacing: 12) {
-                                    Text("snapshot \(event.snapshotID.map(String.init) ?? "—")")
-                                    Text("value \(formatNumber(event.value))")
+                                .padding(.vertical, 9)
+                                if event.id != snapshot.events.last?.id {
+                                    Divider()
                                 }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                             }
-                            Spacer()
-                        }
-                        .padding(.vertical, 9)
-                        if event.id != snapshot.events.last?.id {
-                            Divider()
                         }
                     }
                 }
@@ -429,8 +531,55 @@ private struct EventsPanel: View {
     }
 }
 
+private struct DiagnosticsUnavailablePanel: View {
+    let freshness: DashboardFreshness
+    let uxState: DashboardUXState
+    let errorMessage: String?
+    let databasePath: String
+    let schemaVersion: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("Runtime") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(uxState.title)
+                        .font(.title3.weight(.medium))
+                    FreshnessBadge(state: freshness)
+                    Text("Le statut runtime sera lu dès qu’un snapshot local sera disponible.")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            GroupBox("SQLite local") {
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledContent(
+                        "Database",
+                        value: databasePath.isEmpty ? "Inconnue" : databasePath
+                    )
+                    LabeledContent(
+                        "Schema",
+                        value: schemaVersion.map(String.init) ?? "Inconnue"
+                    )
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                    Text("La lecture sera retentée automatiquement au prochain refresh.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
 private struct DiagnosticsPanel: View {
     let snapshot: DashboardSnapshot
+    let freshness: DashboardFreshness
+    let errorMessage: String?
+    let uxState: DashboardUXState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -438,12 +587,54 @@ private struct DiagnosticsPanel: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(runtimeStateText(snapshot.runtime))
                         .font(.title3.weight(.medium))
+                    LabeledContent("UX state", value: uxState.title)
+                    FreshnessBadge(state: freshness)
+                    LabeledContent(
+                        "Runtime status age",
+                        value: snapshot.runtime.payload.map {
+                            formatAge(now: Date(), date: $0.updatedAt)
+                        } ?? "Inconnu"
+                    )
+                    LabeledContent(
+                        "Database",
+                        value: snapshot.databasePath.isEmpty
+                            ? "Inconnue"
+                            : snapshot.databasePath
+                    )
+                    LabeledContent(
+                        "Schema",
+                        value: snapshot.schemaVersion.map(String.init) ?? "Inconnue"
+                    )
+                    LabeledContent(
+                        "Dropped events",
+                        value: snapshot.overview.droppedEvents.map(String.init) ?? "Inconnu"
+                    )
+                    if let errorMessage {
+                        LabeledContent("Dernière erreur", value: errorMessage)
+                    }
                     if let payload = snapshot.runtime.payload {
                         Text("Mis à jour: \(formatDate(payload.updatedAt))")
                         Text("Cycles: \(payload.cyclesExecuted)")
+                        LabeledContent(
+                            "Last cycle",
+                            value: payload.lastCycleAt.map(formatDate) ?? "Inconnu"
+                        )
+                        LabeledContent(
+                            "Last persistence",
+                            value: payload.lastSuccessfulPersistenceAt.map(formatDate) ?? "Inconnu"
+                        )
+                        LabeledContent(
+                            "Last maintenance",
+                            value: payload.lastMaintenanceAt.map(formatDate) ?? "Inconnu"
+                        )
                     } else {
                         Text("Le statut runtime n’est pas disponible localement.")
                             .foregroundStyle(.secondary)
+                        if case .unknown(let reason) = snapshot.runtime {
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -499,6 +690,33 @@ private struct MetricCard: View {
                 .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct FreshnessBadge: View {
+    let state: DashboardFreshness
+
+    var body: some View {
+        Text(state.title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private var color: Color {
+        switch state {
+        case .live:
+            return .green
+        case .updated:
+            return .blue
+        case .stale, .runtimeFailed, .runtimeStopping:
+            return .orange
+        case .noData, .runtimeStopped, .runtimeUnknown:
+            return .secondary
         }
     }
 }
@@ -562,14 +780,33 @@ private struct NoDataView: View {
     }
 }
 
+private func emptyStateMessage(for state: DashboardUXState) -> String {
+    switch state {
+    case .databaseMissing:
+        return "La base mac-detective est introuvable. Lancez Personal OS ou configurez MAC_DETECTIVE_DATABASE."
+    case .schemaMismatch:
+        return "La base utilise un schéma incompatible avec cette version du dashboard."
+    case .runtimeUnavailable:
+        return "Les données historiques sont disponibles, mais le statut runtime local est inconnu."
+    case .runtimeStopped:
+        return "Le runtime est arrêté. Les dernières données restent consultables."
+    case .runtimeFailed:
+        return "Le runtime est en échec. Les dernières données restent consultables."
+    case .runtimeStopping:
+        return "Le runtime est en cours d’arrêt. Les dernières données restent consultables."
+    case .stale:
+        return "Les dernières données sont conservées, mais elles ne sont plus fraîches."
+    case .noData:
+        return "Aucun snapshot historique n’est disponible pour le moment."
+    case .failed:
+        return "La lecture locale a rencontré une erreur. Voir Diagnostics pour le détail."
+    default:
+        return "Le dashboard n’a pas encore lu de snapshots mac-detective."
+    }
+}
+
 private func formattedMetric(_ value: Double?, unit: String) -> String {
-    guard let value else {
-        return "No data"
-    }
-    if unit == "%" {
-        return String(format: "%.1f%%", value)
-    }
-    return String(format: "%.2f %@", value, unit)
+    DashboardValueFormatter.metric(value, unit: unit)
 }
 
 private func formattedCPU(_ ranking: ProcessRanking) -> String {
@@ -582,19 +819,26 @@ private func formattedMemory(_ ranking: ProcessRanking) -> String {
     return ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .memory)
 }
 
-private func formattedDisk(_ ranking: ProcessRanking) -> String {
-    guard let read = ranking.diskReadBytesPerSecond,
-          let write = ranking.diskWriteBytesPerSecond else {
-        if let total = ranking.diskTotalBytes {
-            return "Total \(ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file))"
-        }
-        return "No data"
-    }
-    return String(format: "↓ %.2f / ↑ %.2f MB/s", read / 1_000_000, write / 1_000_000)
+private func formattedDiskRate(_ value: Double?) -> String {
+    guard let value else { return "No data" }
+    return String(format: "%.2f MB/s", value / 1_000_000)
+}
+
+private func formattedDiskTotal(_ value: UInt64?) -> String {
+    guard let value else { return "No data" }
+    return ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file)
 }
 
 private func formatDate(_ date: Date) -> String {
     date.formatted(date: .omitted, time: .standard)
+}
+
+private func formatAge(now: Date, date: Date) -> String {
+    let seconds = max(0, Int(now.timeIntervalSince(date).rounded(.down)))
+    if seconds < 60 {
+        return "\(seconds)s ago"
+    }
+    return "\(seconds / 60)m ago"
 }
 
 private func formatNumber(_ value: Double) -> String {

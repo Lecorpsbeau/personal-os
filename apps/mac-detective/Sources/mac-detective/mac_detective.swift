@@ -90,9 +90,10 @@ struct MacDetective {
             databaseURL = URL(fileURLWithPath: configuredDatabasePath)
             databaseDirectory = databaseURL.deletingLastPathComponent()
         } else {
-            let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
+            let projectRoot = RuntimePaths.repositoryRoot(
+                fileManager: fileManager,
+                environment: environment
+            )
             databaseDirectory = projectRoot
                 .appendingPathComponent("data/database", isDirectory: true)
             databaseURL = databaseDirectory.appendingPathComponent("mac_detective.sqlite")
@@ -121,7 +122,18 @@ struct MacDetective {
             Darwin.exit(EXIT_FAILURE)
         }
 
-        let configuration = RuntimeConfiguration.standard
+        // fs_usage requires elevated permissions on macOS. Keep it opt-in so
+        // the normal Personal OS launcher never invokes sudo implicitly.
+        let fsUsageEnabled: Bool
+        switch environment["MAC_DETECTIVE_FS_USAGE"]?.lowercased() {
+        case "1", "true", "yes", "on":
+            fsUsageEnabled = true
+        default:
+            fsUsageEnabled = false
+        }
+        let configuration = try! RuntimeConfiguration(
+            fsUsageEnabled: fsUsageEnabled
+        )
         let database = Database(
             databasePath: databaseURL.path,
             logWrites: false
@@ -131,6 +143,17 @@ struct MacDetective {
             ?? databaseDirectory.appendingPathComponent(
                 ".mac-detective-runtime-status.json"
             )
+        do {
+            try fileManager.createDirectory(
+                at: statusURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } catch {
+            print("❌ Impossible de créer le répertoire du statut runtime: \(error)")
+            signals.cancel()
+            instanceLock.release()
+            Darwin.exit(EXIT_FAILURE)
+        }
         let statusStore = RuntimeStatusFileStore(url: statusURL)
         let collector = LiveSnapshotCollector()
         let fsUsage: RuntimeFSUsageSource

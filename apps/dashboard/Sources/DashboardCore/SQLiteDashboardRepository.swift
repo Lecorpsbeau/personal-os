@@ -144,9 +144,67 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
                 message: "required SQLite tables are missing"
             )
         }
+
+        let requiredColumns: [String: Set<String>] = [
+            "system_samples": [
+                "id", "timestamp", "cpu", "memory", "disk_read", "disk_write",
+                "network_in", "network_out", "dropped_events"
+            ],
+            "process_samples": [
+                "snapshot_id", "timestamp", "pid", "name", "cpu", "memory",
+                "disk_read_bytes", "disk_write_bytes"
+            ],
+            "disk_process_events": [
+                "snapshot_id", "timestamp", "operation", "bytes", "process_name", "pid"
+            ],
+            "events": [
+                "id", "snapshot_id", "timestamp", "type", "severity", "value", "message"
+            ],
+            "hourly_system_stats": [
+                "bucket_start", "sample_count", "cpu_avg", "cpu_max", "memory_avg",
+                "memory_max", "disk_read_avg", "disk_read_max", "disk_write_avg",
+                "disk_write_max", "network_in_avg", "network_in_max", "network_out_avg",
+                "network_out_max"
+            ]
+        ]
+
+        for (table, expectedColumns) in requiredColumns {
+            let actualColumns = try withStatement(
+                "PRAGMA table_info(\(table));"
+            ) { statement in
+                var columns = Set<String>()
+                while try nextRow(statement) {
+                    if let name = stringColumn(statement, 1) {
+                        columns.insert(name)
+                    }
+                }
+                return columns
+            }
+            guard expectedColumns.isSubset(of: actualColumns) else {
+                let missing = expectedColumns.subtracting(actualColumns).sorted().joined(separator: ", ")
+                throw DashboardRepositoryError.invalidData(
+                    message: "required SQLite columns are missing in \(table): \(missing)"
+                )
+            }
+        }
     }
 
     private func fetchDashboardSynchronously(
+        range: DashboardTimeRange
+    ) throws -> DashboardSnapshot {
+        // Keep all panels on one SQLite read snapshot while the writer uses WAL.
+        try withStatement("BEGIN DEFERRED TRANSACTION;") { _ in }
+        do {
+            let snapshot = try fetchDashboardSnapshotSynchronously(range: range)
+            try withStatement("COMMIT;") { _ in }
+            return snapshot
+        } catch {
+            try? withStatement("ROLLBACK;") { _ in }
+            throw error
+        }
+    }
+
+    private func fetchDashboardSnapshotSynchronously(
         range: DashboardTimeRange
     ) throws -> DashboardSnapshot {
         let now = configuration.now()
@@ -184,7 +242,9 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             rankings: rankings,
             events: events,
             runtime: runtime,
-            fsUsage: runtime.payload?.fsUsage
+            fsUsage: runtime.payload?.fsUsage,
+            databasePath: configuration.databaseURL.path,
+            schemaVersion: DashboardRepositoryConfiguration.currentSchemaVersion
         )
     }
 
@@ -198,8 +258,14 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             LIMIT 1;
             """
         ) { statement in
-            guard sqlite3_step(statement) == SQLITE_ROW else {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE {
                 return nil
+            }
+            guard result == SQLITE_ROW else {
+                throw DashboardRepositoryError.sqlite(
+                    message: "unable to read latest system sample"
+                )
             }
             return DashboardSample(
                 id: Int64(sqlite3_column_int64(statement, 0)),
@@ -283,14 +349,23 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
     ) throws -> AggregateSummary? {
         let summary: AggregateSummary? = try withStatement(
             """
-            SELECT COUNT(*), AVG(cpu_avg), MAX(cpu_max),
-                   AVG(memory_avg), MAX(memory_max),
-                   AVG(disk_read_avg), MAX(disk_read_max),
-                   AVG(disk_write_avg), MAX(disk_write_max),
-                   AVG(network_in_avg), MAX(network_in_max),
-                   AVG(network_out_avg), MAX(network_out_max)
+            SELECT COUNT(*),
+                   SUM(cpu_avg * sample_count) / NULLIF(SUM(sample_count), 0),
+                   MAX(cpu_max),
+                   SUM(memory_avg * sample_count) / NULLIF(SUM(sample_count), 0),
+                   MAX(memory_max),
+                   SUM(disk_read_avg * sample_count) / NULLIF(SUM(sample_count), 0),
+                   MAX(disk_read_max),
+                   SUM(disk_write_avg * sample_count) / NULLIF(SUM(sample_count), 0),
+                   MAX(disk_write_max),
+                   SUM(network_in_avg * sample_count) / NULLIF(SUM(sample_count), 0),
+                   MAX(network_in_max),
+                   SUM(network_out_avg * sample_count) / NULLIF(SUM(sample_count), 0),
+                   MAX(network_out_max)
             FROM hourly_system_stats
-            WHERE bucket_start >= ? AND bucket_start <= ?;
+            WHERE bucket_start >= ?
+              AND bucket_start <= ?
+              AND sample_count > 0;
             """
         ) { statement in
             try bind(start.timeIntervalSince1970, to: statement, at: 1)
@@ -395,14 +470,16 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             SELECT bucket_start, cpu_avg, memory_avg, disk_read_avg,
                    disk_write_avg, network_in_avg, network_out_avg
             FROM hourly_system_stats
-            WHERE bucket_start >= ? AND bucket_start <= ?
+            WHERE bucket_start >= ?
+              AND bucket_start <= ?
+              AND sample_count > 0
             ORDER BY bucket_start ASC;
             """
         ) { statement in
             try bind(start.timeIntervalSince1970, to: statement, at: 1)
             try bind(end.timeIntervalSince1970, to: statement, at: 2)
             var points: [MetricPoint] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
+            while try nextRow(statement) {
                 points.append(
                     MetricPoint(
                         timestamp: dateColumn(statement, 0),
@@ -437,7 +514,7 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             try bind(start.timeIntervalSince1970, to: statement, at: 1)
             try bind(end.timeIntervalSince1970, to: statement, at: 2)
             var points: [MetricPoint] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
+            while try nextRow(statement) {
                 points.append(
                     MetricPoint(
                         timestamp: dateColumn(statement, 0),
@@ -515,7 +592,7 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             try bind(snapshotID, to: statement, at: 1)
             try bind(Int64(limit), to: statement, at: 2)
             var rows: [ProcessRow] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
+            while try nextRow(statement) {
                 rows.append(
                     ProcessRow(
                         pid: Int32(sqlite3_column_int(statement, 0)),
@@ -540,8 +617,14 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             """
         ) { statement in
             try bind(timestamp.timeIntervalSince1970, to: statement, at: 1)
-            guard sqlite3_step(statement) == SQLITE_ROW else {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE {
                 return nil
+            }
+            guard result == SQLITE_ROW else {
+                throw DashboardRepositoryError.sqlite(
+                    message: "unable to read previous system sample"
+                )
             }
             return dateColumn(statement, 0)
         }
@@ -568,7 +651,7 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             try bind(snapshotID, to: statement, at: 1)
             try bind(Int64(limit), to: statement, at: 2)
             var rankings: [ProcessRanking] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
+            while try nextRow(statement) {
                 let readBytes = uint64Column(statement, 2)
                 let writeBytes = uint64Column(statement, 3)
                 let totalBytes = uint64Column(statement, 4)
@@ -603,7 +686,7 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
         ) { statement in
             try bind(Int64(limit), to: statement, at: 1)
             var events: [DashboardEvent] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
+            while try nextRow(statement) {
                 let snapshotID: Int64?
                 if sqlite3_column_type(statement, 6) == SQLITE_NULL {
                     snapshotID = nil
@@ -644,6 +727,20 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
             guard payload.version == 1 else {
                 return .unknown(reason: "Unsupported runtime status version")
             }
+            let knownStates = ["running", "stopping", "stopped", "failed"]
+            guard knownStates.contains(payload.state.lowercased()) else {
+                return .unknown(reason: "Unknown runtime state")
+            }
+            let dates = [
+                payload.updatedAt,
+                payload.lastCycleAt,
+                payload.lastSuccessfulPersistenceAt,
+                payload.lastMaintenanceAt
+            ].compactMap { $0 }
+            guard dates.allSatisfy({ $0.timeIntervalSinceReferenceDate.isFinite }),
+                  payload.cyclesExecuted >= 0 else {
+                return .unknown(reason: "Invalid runtime status values")
+            }
             if now.timeIntervalSince(payload.updatedAt) > configuration.staleAfter {
                 return .stale(payload)
             }
@@ -655,12 +752,32 @@ public final class SQLiteDashboardRepository: DashboardRepository, @unchecked Se
 
     private func scalarInt(_ query: String) throws -> Int {
         try withStatement(query) { statement in
-            guard sqlite3_step(statement) == SQLITE_ROW else {
+            let result = sqlite3_step(statement)
+            guard result == SQLITE_ROW else {
                 throw DashboardRepositoryError.sqlite(
                     message: "unable to read scalar value"
                 )
             }
             return Int(sqlite3_column_int64(statement, 0))
+        }
+    }
+
+    private func nextRow(_ statement: OpaquePointer) throws -> Bool {
+        let result = sqlite3_step(statement)
+        switch result {
+        case SQLITE_ROW:
+            return true
+        case SQLITE_DONE:
+            return false
+        default:
+            guard let connection else {
+                throw DashboardRepositoryError.sqlite(
+                    message: "database is not open"
+                )
+            }
+            throw DashboardRepositoryError.sqlite(
+                message: String(cString: sqlite3_errmsg(connection))
+            )
         }
     }
 

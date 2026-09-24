@@ -44,42 +44,65 @@ public struct DashboardRepositoryConfiguration: Sendable {
         self.runtimeStatusURL = runtimeStatusURL
             ?? databaseURL.deletingLastPathComponent()
                 .appendingPathComponent(Self.defaultRuntimeStatusFilename)
-        self.staleAfter = staleAfter
+        self.staleAfter = staleAfter.isFinite ? max(0.1, staleAfter) : 10
         self.now = now
     }
 
     public static func local(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        workingDirectory: URL? = nil
     ) -> DashboardRepositoryConfiguration {
+        let currentDirectory = workingDirectory
+            ?? URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+        let statusPath = environment["MAC_DETECTIVE_RUNTIME_STATUS"]
+
         if let databasePath = environment["MAC_DETECTIVE_DATABASE"] {
-            let databaseURL = URL(fileURLWithPath: databasePath)
-            let statusURL = environment["MAC_DETECTIVE_RUNTIME_STATUS"]
-                .map { URL(fileURLWithPath: $0) }
+            let databaseURL = fileURL(
+                for: databasePath,
+                relativeTo: currentDirectory
+            )
+            let statusURL = statusPath.map {
+                fileURL(for: $0, relativeTo: currentDirectory)
+            }
             return DashboardRepositoryConfiguration(
                 databaseURL: databaseURL,
                 runtimeStatusURL: statusURL
             )
         }
 
-        let currentDirectory = URL(
-            fileURLWithPath: fileManager.currentDirectoryPath,
-            isDirectory: true
-        )
-        var candidates: [URL] = [currentDirectory]
-
-        if currentDirectory.lastPathComponent == "dashboard",
-           currentDirectory.deletingLastPathComponent().lastPathComponent == "apps" {
-            candidates.insert(
-                currentDirectory.deletingLastPathComponent().deletingLastPathComponent(),
-                at: 0
+        if let rootPath = environment["PERSONAL_OS_ROOT"] {
+            let rootURL = fileURL(for: rootPath, relativeTo: currentDirectory)
+            let databaseURL = rootURL
+                .appendingPathComponent("data/database", isDirectory: true)
+                .appendingPathComponent(Self.defaultDatabaseFilename)
+            return DashboardRepositoryConfiguration(
+                databaseURL: databaseURL,
+                runtimeStatusURL: statusPath.map {
+                    fileURL(for: $0, relativeTo: currentDirectory)
+                }
             )
         }
 
-        var ancestor = currentDirectory
-        for _ in 0..<5 {
-            ancestor = ancestor.deletingLastPathComponent()
-            candidates.append(ancestor)
+        var candidates: [URL] = [currentDirectory]
+
+        // An explicit working directory is authoritative. This keeps local
+        // configuration deterministic for embedders and tests; automatic
+        // discovery is only used for the normal process launch.
+        if workingDirectory == nil {
+            if currentDirectory.lastPathComponent == "dashboard",
+               currentDirectory.deletingLastPathComponent().lastPathComponent == "apps" {
+                candidates.insert(
+                    currentDirectory.deletingLastPathComponent().deletingLastPathComponent(),
+                    at: 0
+                )
+            }
+
+            var ancestor = currentDirectory
+            for _ in 0..<5 {
+                ancestor = ancestor.deletingLastPathComponent()
+                candidates.append(ancestor)
+            }
         }
 
         let databaseDirectory = candidates
@@ -88,7 +111,19 @@ public struct DashboardRepositoryConfiguration: Sendable {
             ?? candidates[0].appendingPathComponent("data/database", isDirectory: true)
         let databaseURL = databaseDirectory.appendingPathComponent(Self.defaultDatabaseFilename)
 
-        return DashboardRepositoryConfiguration(databaseURL: databaseURL)
+        return DashboardRepositoryConfiguration(
+            databaseURL: databaseURL,
+            runtimeStatusURL: statusPath.map {
+                fileURL(for: $0, relativeTo: currentDirectory)
+            }
+        )
+    }
+
+    private static func fileURL(for path: String, relativeTo directory: URL) -> URL {
+        if path.hasPrefix("/") {
+            return URL(fileURLWithPath: path)
+        }
+        return URL(fileURLWithPath: path, relativeTo: directory).standardizedFileURL
     }
 }
 

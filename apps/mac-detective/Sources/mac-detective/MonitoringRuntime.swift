@@ -284,6 +284,8 @@ final class FSUsageRuntimeSource: RuntimeFSUsageSource {
 
 final class DisabledFSUsageRuntimeSource: RuntimeFSUsageSource {
     var droppedEventCount: Int { 0 }
+    var diagnostic: String? { "disabled (opt-in with MAC_DETECTIVE_FS_USAGE=1)" }
+    var stateName: String? { "disabled" }
 
     func start() throws {}
     func stop() {}

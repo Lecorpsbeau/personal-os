@@ -6,20 +6,16 @@ struct PersonalOSDashboardApp: App {
     @StateObject private var viewModel: DashboardViewModel
 
     init() {
-        let repository: any DashboardRepository
-        do {
-            repository = try SQLiteDashboardRepository(
-                configuration: .local()
-            )
-        } catch {
-            repository = UnavailableDashboardRepository(
-                error: DashboardRepositoryError.invalidData(
-                    message: error.localizedDescription
-                )
-            )
-        }
+        let configuration = DashboardRepositoryConfiguration.local()
+        let repository = RetryingSQLiteDashboardRepository(
+            configuration: configuration
+        )
         _viewModel = StateObject(
-            wrappedValue: DashboardViewModel(repository: repository)
+            wrappedValue: DashboardViewModel(
+                repository: repository,
+                databasePath: configuration.databaseURL.path,
+                schemaVersion: DashboardRepositoryConfiguration.currentSchemaVersion
+            )
         )
     }
 

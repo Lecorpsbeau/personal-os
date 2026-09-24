@@ -92,21 +92,18 @@ final class Database {
         if let databasePath {
             path = databasePath
         } else {
-            let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-
-            let databaseDirectory = projectRoot
-                .appendingPathComponent("data/database", isDirectory: true)
+            let databaseURL = RuntimePaths.defaultDatabaseURL(
+                fileManager: fileManager,
+                environment: ProcessInfo.processInfo.environment
+            )
+            let databaseDirectory = databaseURL.deletingLastPathComponent()
 
             try? fileManager.createDirectory(
                 at: databaseDirectory,
                 withIntermediateDirectories: true
             )
 
-            path = databaseDirectory
-                .appendingPathComponent("mac_detective.sqlite")
-                .path
+            path = databaseURL.path
         }
 
         self.inMemoryDatabase = path == ":memory:" ||

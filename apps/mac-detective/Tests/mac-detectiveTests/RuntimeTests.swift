@@ -929,6 +929,19 @@ struct MonitoringRuntimeTests {
         }
     }
 
+    @Test("Runtime paths honor the shared repository root")
+    func testRuntimePaths() {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("runtime-paths-\(UUID().uuidString)", isDirectory: true)
+        let databaseURL = RuntimePaths.defaultDatabaseURL(
+            environment: ["PERSONAL_OS_ROOT": root.path]
+        )
+        #expect(
+            databaseURL
+                == root.appendingPathComponent("data/database/mac_detective.sqlite")
+        )
+    }
+
     @Test("Cycle metrics expose duration and timestamps")
     func testMetrics() {
         let clock = RuntimeTestClock()

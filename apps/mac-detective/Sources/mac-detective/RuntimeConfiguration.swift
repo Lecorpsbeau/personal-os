@@ -28,6 +28,8 @@ struct RuntimeConfiguration: Equatable, Sendable {
         self.fsUsageEnabled = fsUsageEnabled
     }
 
+    // Keep the programmatic/test default compatible; the executable entry
+    // point selects fs_usage from its explicit environment opt-in.
     static let standard = try! RuntimeConfiguration()
 
     static func validate(

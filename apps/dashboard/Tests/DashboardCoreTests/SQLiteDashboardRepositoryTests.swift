@@ -62,6 +62,39 @@ struct SQLiteDashboardRepositoryTests {
         #expect(snapshot.overview.memory.average == 30)
     }
 
+    @Test("Hourly summaries are weighted and ignore zero-sample buckets")
+    func testWeightedHourlySummary() async throws {
+        let fixture = try DashboardDatabaseFixture()
+        var connection: OpaquePointer?
+        guard sqlite3_open(fixture.databaseURL.path, &connection) == SQLITE_OK else {
+            Issue.record("Could not open fixture")
+            return
+        }
+        let insert = """
+            INSERT INTO hourly_system_stats
+                (bucket_start, sample_count, cpu_avg, cpu_max, memory_avg, memory_max,
+                 disk_read_avg, disk_read_max, disk_write_avg, disk_write_max,
+                 network_in_avg, network_in_max, network_out_avg, network_out_max,
+                 disk_event_count, disk_event_bytes, anomaly_count, dropped_events_sum)
+            VALUES
+                (\(fixture.now.addingTimeInterval(-7200).timeIntervalSince1970), 3, 10, 15, 10, 15, 1, 2, 1, 2, 1, 2, 1, 2, 0, 0, 0, 0),
+                (\(fixture.now.addingTimeInterval(-10800).timeIntervalSince1970), 0, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 0, 0, 0, 0);
+            """
+        #expect(sqlite3_exec(connection, insert, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close_v2(connection)
+
+        let repository = try SQLiteDashboardRepository(
+            configuration: fixture.makeConfiguration()
+        )
+        defer { repository.close() }
+        let snapshot = try await repository.fetchDashboard(range: .oneDay)
+
+        // Existing bucket: 20 @ 1 sample + new bucket: 10 @ 3 samples = 12.5.
+        #expect(snapshot.overview.cpu.average == 12.5)
+        #expect(snapshot.history.count == 2)
+        #expect(snapshot.history.allSatisfy { $0.cpu != 99 })
+    }
+
     @Test("Process rankings expose CPU RAM and disk values")
     func testProcessRankings() async throws {
         let fixture = try DashboardDatabaseFixture()

@@ -1,5 +1,7 @@
 .DS_Store
+.build/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.mac-detective-runtime-status.json
+.runtime/

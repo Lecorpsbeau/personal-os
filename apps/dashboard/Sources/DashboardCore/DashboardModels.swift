@@ -34,6 +34,31 @@ public enum DashboardTimeRange: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum DashboardSection: String, CaseIterable, Identifiable, Sendable {
+    case overview
+    case history
+    case processes
+    case events
+    case diagnostics
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .overview:
+            return "Overview"
+        case .history:
+            return "History"
+        case .processes:
+            return "Processes"
+        case .events:
+            return "Events"
+        case .diagnostics:
+            return "Diagnostics"
+        }
+    }
+}
+
 public struct MetricSummary: Equatable, Sendable {
     public let current: Double?
     public let average: Double?
@@ -310,6 +335,8 @@ public struct DashboardSnapshot: Equatable, Sendable {
     public let events: [DashboardEvent]
     public let runtime: RuntimeObservation
     public let fsUsage: RuntimeFSUsageStatusPayload?
+    public let databasePath: String
+    public let schemaVersion: Int?
 
     public init(
         generatedAt: Date,
@@ -319,7 +346,9 @@ public struct DashboardSnapshot: Equatable, Sendable {
         rankings: ProcessRankings,
         events: [DashboardEvent],
         runtime: RuntimeObservation,
-        fsUsage: RuntimeFSUsageStatusPayload?
+        fsUsage: RuntimeFSUsageStatusPayload?,
+        databasePath: String = "",
+        schemaVersion: Int? = nil
     ) {
         self.generatedAt = generatedAt
         self.range = range
@@ -329,5 +358,7 @@ public struct DashboardSnapshot: Equatable, Sendable {
         self.events = events
         self.runtime = runtime
         self.fsUsage = fsUsage
+        self.databasePath = databasePath
+        self.schemaVersion = schemaVersion
     }
 }
