@@ -1030,7 +1030,7 @@ struct SQLiteMigrationTests {
 
         let database = Database(databasePath: path)
 
-        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 2)
         #expect(try objectExists(type: "table", name: "system_samples", databasePath: path))
         #expect(try objectExists(type: "table", name: "process_samples", databasePath: path))
         #expect(try objectExists(type: "table", name: "events", databasePath: path))
@@ -1050,7 +1050,7 @@ struct SQLiteMigrationTests {
         try createInitialSchema(databasePath: path)
         let database = Database(databasePath: path)
 
-        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 2)
         #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
         #expect(try readInteger("SELECT COUNT(*) FROM process_samples;", databasePath: path) == 1)
         #expect(try readInteger("SELECT COUNT(*) FROM events;", databasePath: path) == 1)
@@ -1072,7 +1072,7 @@ struct SQLiteMigrationTests {
 
         let reopened = Database(databasePath: path)
 
-        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 2)
         #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
         #expect(try columnExists("disk_read_bytes", databasePath: path))
         #expect(try objectExists(type: "table", name: "disk_process_events", databasePath: path))
@@ -1094,7 +1094,7 @@ struct SQLiteMigrationTests {
             #expect(database.getTopDiskProcesses().isEmpty)
         }
 
-        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 2)
         #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
         #expect(try columnExists("disk_read_bytes", databasePath: path))
         #expect(try columnExists("disk_write_bytes", databasePath: path))
@@ -1786,6 +1786,686 @@ struct CPUAndMachReliabilityTests {
         #expect(receivedAddress == region.address)
         #expect(receivedSize == region.size)
         #expect(region.size == vm_size_t(4 * MemoryLayout<integer_t>.size))
+    }
+}
+
+@Suite("Database Performance and Retention Tests")
+struct DatabasePerformanceAndRetentionTests {
+
+    private let referenceDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func makeTemporaryPath() -> String {
+        NSTemporaryDirectory() + "test_retention_\(UUID().uuidString).sqlite"
+    }
+
+    private func cleanDatabase(path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+        try? FileManager.default.removeItem(atPath: path + "-wal")
+        try? FileManager.default.removeItem(atPath: path + "-shm")
+    }
+
+    private func execute(_ sql: String, databasePath: String) throws {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let result = sqlite3_exec(
+            connection,
+            sql,
+            nil,
+            nil,
+            &errorMessage
+        )
+
+        guard result == SQLITE_OK else {
+            let message = errorMessage.map {
+                String(cString: $0)
+            } ?? "unknown SQLite error"
+            sqlite3_free(errorMessage)
+            throw MigrationTestError.sqlite(message)
+        }
+    }
+
+    private func readInteger(
+        _ sql: String,
+        databasePath: String
+    ) throws -> Int64 {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func readDouble(
+        _ sql: String,
+        databasePath: String
+    ) throws -> Double {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        return sqlite3_column_double(statement, 0)
+    }
+
+    private func readString(
+        _ sql: String,
+        databasePath: String
+    ) throws -> String {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        let pointer = try #require(sqlite3_column_text(statement, 0))
+        return String(cString: pointer)
+    }
+
+    private func queryPlan(
+        _ sql: String,
+        databasePath: String
+    ) throws -> [String] {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(
+                connection,
+                "EXPLAIN QUERY PLAN \(sql)",
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        var details: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let pointer = sqlite3_column_text(statement, 3) else {
+                continue
+            }
+            details.append(String(cString: pointer))
+        }
+        return details
+    }
+
+    private func makeSnapshot(
+        at date: Date,
+        cpu: Double = 20,
+        memory: Double = 50,
+        diskRead: Double = 100,
+        diskWrite: Double = 200,
+        networkIn: Double = 300,
+        networkOut: Double = 400,
+        processCount: Int = 1,
+        includeDiskEvent: Bool = true,
+        droppedEvents: Int = 0
+    ) -> (SystemSnapshot, [DiskProcessEvent]) {
+        var processes: [ProcessSnapshot] = []
+        for index in 0..<processCount {
+            let process = ProcessSnapshot(
+                pid: Int32(index + 1),
+                name: "process_\(index + 1)",
+                cpuUsage: cpu + Double(index),
+                memoryBytes: UInt64(1_000_000 * (index + 1)),
+                diskReadBytes: UInt64(1_000 * (index + 1)),
+                diskWriteBytes: UInt64(2_000 * (index + 1))
+            )
+            processes.append(process)
+        }
+        let events = includeDiskEvent
+            ? [DiskProcessEvent(
+                timestamp: date,
+                operation: "W",
+                bytes: 4096,
+                processName: "process_1",
+                pid: 1
+            )]
+            : []
+
+        return (
+            SystemSnapshot(
+                timestamp: date,
+                cpu: cpu,
+                memory: memory,
+                diskRead: diskRead,
+                diskWrite: diskWrite,
+                networkIn: networkIn,
+                networkOut: networkOut,
+                processes: processes,
+                droppedEvents: droppedEvents
+            ),
+            events
+        )
+    }
+
+    private func save(
+        _ database: Database,
+        at date: Date,
+        cpu: Double = 20,
+        memory: Double = 50,
+        diskRead: Double = 100,
+        diskWrite: Double = 200,
+        networkIn: Double = 300,
+        networkOut: Double = 400,
+        processCount: Int = 1,
+        includeDiskEvent: Bool = true,
+        includeAnomaly: Bool = false,
+        droppedEvents: Int = 0
+    ) throws -> Int64 {
+        let (snapshot, events) = makeSnapshot(
+            at: date,
+            cpu: cpu,
+            memory: memory,
+            diskRead: diskRead,
+            diskWrite: diskWrite,
+            networkIn: networkIn,
+            networkOut: networkOut,
+            processCount: processCount,
+            includeDiskEvent: includeDiskEvent,
+            droppedEvents: droppedEvents
+        )
+        let snapshotID = try #require(
+            database.save(snapshot: snapshot, diskProcessEvents: events)
+        )
+        if includeAnomaly {
+            database.saveEvent(
+                DetectedEvent(
+                    type: "TEST_EVENT",
+                    severity: "info",
+                    value: 1,
+                    message: "test"
+                ),
+                snapshotID: snapshotID,
+                timestamp: date
+            )
+        }
+        return snapshotID
+    }
+
+    private func totalDatabaseBytes(path: String) -> Int {
+        [path, path + "-wal", path + "-shm"]
+            .compactMap { try? FileManager.default.attributesOfItem(atPath: $0)[.size] as? NSNumber }
+            .compactMap { $0?.intValue }
+            .reduce(0, +)
+    }
+
+    @Test("Schema, WAL and maintenance indexes are available")
+    func testSchemaWALAndIndexes() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let database = Database(databasePath: path, logWrites: false)
+        #expect(database.journalMode.lowercased() == "wal")
+        #expect(try readString("PRAGMA journal_mode;", databasePath: path).lowercased() == "wal")
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_system_samples_timestamp';", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_events_snapshot_id';", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_process_samples_snapshot_cpu';", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_disk_process_events_snapshot_id';", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM pragma_table_info('system_samples') WHERE name='dropped_events';", databasePath: path) == 1)
+
+        _ = try save(database, at: referenceDate)
+
+        let processPlan = try queryPlan(
+            "SELECT pid, name, cpu FROM process_samples WHERE snapshot_id = 1 ORDER BY cpu DESC LIMIT 5;",
+            databasePath: path
+        )
+        #expect(processPlan.contains { $0.contains("idx_process_samples_snapshot_cpu") })
+
+        let diskPlan = try queryPlan(
+            "SELECT process_name, pid, SUM(bytes) FROM disk_process_events WHERE snapshot_id = 1 GROUP BY process_name, pid;",
+            databasePath: path
+        )
+        #expect(diskPlan.contains { $0.contains("idx_disk_process_events_snapshot_id") })
+
+        let retentionPlan = try queryPlan(
+            "DELETE FROM system_samples WHERE timestamp < 1;",
+            databasePath: path
+        )
+        #expect(retentionPlan.contains { $0.contains("idx_system_samples_timestamp") })
+    }
+
+    @Test("Schema version 1 migrates to aggregates and retention indexes")
+    func testVersionOneMigration() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        do {
+            _ = Database(databasePath: path, logWrites: false)
+        }
+        try execute(
+            """
+            DROP TABLE hourly_process_stats;
+            DROP TABLE daily_process_stats;
+            DROP TABLE hourly_system_stats;
+            DROP TABLE daily_system_stats;
+            DROP INDEX idx_system_samples_timestamp;
+            DROP INDEX idx_events_snapshot_id;
+            PRAGMA user_version = 1;
+            """,
+            databasePath: path
+        )
+
+        let migrated = Database(databasePath: path, logWrites: false)
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hourly_system_stats';", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_system_samples_timestamp';", databasePath: path) == 1)
+        #expect(migrated.journalMode.lowercased() == "wal")
+    }
+
+    @Test("Retention preserves the exact cutoff and removes older detail")
+    func testRetentionBoundaries() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let now = referenceDate
+        let cutoff = now.addingTimeInterval(-2 * 86_400)
+        let policy = DatabaseRetentionPolicy(
+            detailedRetentionDays: 2,
+            hourlyRetentionDays: 30,
+            dailyRetentionDays: 365
+        )
+        let database = Database(
+            databasePath: path,
+            retentionPolicy: policy,
+            logWrites: false
+        )
+
+        _ = try save(database, at: cutoff - 1, includeAnomaly: true)
+        _ = try save(database, at: cutoff, includeAnomaly: true)
+        _ = try save(database, at: cutoff + 1, includeAnomaly: true)
+        _ = try save(database, at: now, includeAnomaly: true)
+
+        let report = try database.performMaintenance(now: now)
+        #expect(report.deletedSystemSamples == 1)
+        #expect(report.deletedProcessSamples == 1)
+        #expect(report.deletedDiskProcessEvents == 1)
+        #expect(report.deletedEvents == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 3)
+        #expect(try readInteger("SELECT COUNT(*) FROM process_samples;", databasePath: path) == 3)
+        #expect(try readInteger("SELECT COUNT(*) FROM disk_process_events;", databasePath: path) == 3)
+        #expect(try readInteger("SELECT COUNT(*) FROM events;", databasePath: path) == 3)
+        #expect(try readInteger("SELECT COUNT(*) FROM hourly_system_stats;", databasePath: path) > 0)
+    }
+
+    @Test("Maintenance aggregates hourly and daily statistics")
+    func testAggregation() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let policy = DatabaseRetentionPolicy(
+            detailedRetentionDays: 7,
+            hourlyRetentionDays: 30,
+            dailyRetentionDays: 365
+        )
+        let database = Database(
+            databasePath: path,
+            retentionPolicy: policy,
+            logWrites: false
+        )
+        let first = referenceDate
+        let second = first.addingTimeInterval(40 * 60)
+        let nextDay = first.addingTimeInterval(24 * 60 * 60)
+
+        _ = try save(
+            database,
+            at: first,
+            cpu: 20,
+            memory: 50,
+            diskRead: 100,
+            diskWrite: 200,
+            includeAnomaly: true,
+            droppedEvents: 3
+        )
+        _ = try save(
+            database,
+            at: second,
+            cpu: 40,
+            memory: 70,
+            diskRead: 300,
+            diskWrite: 500,
+            includeDiskEvent: true,
+            droppedEvents: 5
+        )
+        _ = try save(
+            database,
+            at: nextDay,
+            cpu: 30,
+            memory: 60,
+            diskRead: 200,
+            diskWrite: 400,
+            includeDiskEvent: true,
+            droppedEvents: 2
+        )
+
+        let report = try database.performMaintenance(now: nextDay)
+        #expect(report.refreshedHourlySystemStats == 2)
+        #expect(report.refreshedDailySystemStats == 2)
+        #expect(report.refreshedHourlyProcessStats == 2)
+        #expect(report.refreshedDailyProcessStats == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM hourly_system_stats;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM daily_system_stats;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM hourly_process_stats;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM daily_process_stats;", databasePath: path) == 2)
+
+        #expect(try readDouble("SELECT cpu_avg FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 30)
+        #expect(try readDouble("SELECT cpu_max FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 40)
+        #expect(try readDouble("SELECT memory_avg FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 60)
+        #expect(try readDouble("SELECT disk_read_sum FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 400)
+        #expect(try readDouble("SELECT cpu_avg FROM hourly_process_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 30)
+        #expect(try readInteger("SELECT disk_event_count FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT anomaly_count FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT dropped_events_sum FROM hourly_system_stats ORDER BY bucket_start LIMIT 1;", databasePath: path) == 8)
+    }
+
+    @Test("Repeated maintenance is idempotent")
+    func testMaintenanceIsIdempotent() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let policy = DatabaseRetentionPolicy(
+            detailedRetentionDays: 1,
+            hourlyRetentionDays: 30,
+            dailyRetentionDays: 365
+        )
+        let database = Database(
+            databasePath: path,
+            retentionPolicy: policy,
+            logWrites: false
+        )
+        _ = try save(database, at: referenceDate - 3 * 86_400)
+        _ = try save(database, at: referenceDate)
+
+        let first = try database.performMaintenance(now: referenceDate)
+        let aggregateCount = try readInteger(
+            "SELECT COUNT(*) FROM daily_system_stats;",
+            databasePath: path
+        )
+        let second = try database.performMaintenance(now: referenceDate)
+
+        #expect(first.deletedSystemSamples == 1)
+        #expect(second.totalDeleted == 0)
+        #expect(try readInteger("SELECT COUNT(*) FROM daily_system_stats;", databasePath: path) == aggregateCount)
+        #expect(second.refreshedDailySystemStats > 0)
+    }
+
+    @Test("Maintenance on an empty database is safe")
+    func testMaintenanceOnEmptyDatabase() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let database = Database(databasePath: path, logWrites: false)
+        let report = try database.performMaintenance(now: referenceDate)
+
+        #expect(report.totalDeleted == 0)
+        #expect(try readInteger("SELECT COUNT(*) FROM hourly_system_stats;", databasePath: path) == 0)
+        #expect(try readInteger("SELECT COUNT(*) FROM daily_system_stats;", databasePath: path) == 0)
+    }
+
+    @Test("Maintenance rolls back when aggregation fails")
+    func testMaintenanceRollback() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let policy = DatabaseRetentionPolicy(
+            detailedRetentionDays: 1,
+            hourlyRetentionDays: 30,
+            dailyRetentionDays: 365
+        )
+        let database = Database(
+            databasePath: path,
+            retentionPolicy: policy,
+            logWrites: false
+        )
+        _ = try save(database, at: referenceDate - 3 * 86_400)
+        _ = try save(database, at: referenceDate)
+        try execute(
+            """
+            CREATE TRIGGER fail_hourly_aggregate
+            BEFORE INSERT ON hourly_system_stats
+            BEGIN
+                SELECT RAISE(ABORT, 'forced maintenance failure');
+            END;
+            """,
+            databasePath: path
+        )
+
+        var didThrow = false
+        do {
+            _ = try database.performMaintenance(now: referenceDate)
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 2)
+        #expect(try readInteger("SELECT COUNT(*) FROM process_samples;", databasePath: path) == 2)
+    }
+
+    @Test("Retention and aggregation query plans use intended indexes")
+    func testRetentionQueryPlans() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let database = Database(databasePath: path, logWrites: false)
+        _ = try save(database, at: referenceDate, processCount: 2)
+
+        let processPlan = try queryPlan(
+            "SELECT pid, name, cpu FROM process_samples WHERE snapshot_id = 1 ORDER BY cpu DESC LIMIT 5;",
+            databasePath: path
+        )
+        #expect(processPlan.contains { $0.contains("idx_process_samples_snapshot_cpu") })
+
+        let diskPlan = try queryPlan(
+            "SELECT process_name, pid, SUM(bytes) FROM disk_process_events WHERE snapshot_id = 1 GROUP BY process_name, pid;",
+            databasePath: path
+        )
+        #expect(diskPlan.contains { $0.contains("idx_disk_process_events_snapshot_id") })
+
+        let eventPlan = try queryPlan(
+            "DELETE FROM events WHERE snapshot_id IN (SELECT id FROM system_samples WHERE timestamp < 1);",
+            databasePath: path
+        )
+        #expect(eventPlan.contains { $0.contains("idx_events_snapshot_id") })
+    }
+
+    @Test("Foreign keys remain enforced after maintenance")
+    func testForeignKeysAfterMaintenance() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let database = Database(databasePath: path, logWrites: false)
+        _ = try save(database, at: referenceDate)
+        _ = try database.performMaintenance(now: referenceDate)
+
+        let orphan = DiskProcessEvent(
+            timestamp: referenceDate,
+            operation: "W",
+            bytes: 1,
+            processName: "orphan",
+            pid: 999
+        )
+        #expect(!database.saveDiskProcessEvent(orphan, snapshotID: 999_999))
+    }
+
+    @Test("Synthetic benchmark covers 1,000 and 10,000 snapshots")
+    func testSyntheticBenchmark() throws {
+        let results = try benchmark(snapshotCount: 1_000)
+        let largeResults = try benchmark(snapshotCount: 10_000)
+
+        print(
+            "M007 benchmark 1k: insert=\(results.insertSeconds)s ranking=\(results.rankingSeconds)s maintenance=\(results.maintenanceSeconds)s bytes_before=\(results.bytesBeforeMaintenance) bytes_after=\(results.bytesAfterMaintenance)"
+        )
+        print(
+            "M007 benchmark 10k: insert=\(largeResults.insertSeconds)s ranking=\(largeResults.rankingSeconds)s maintenance=\(largeResults.maintenanceSeconds)s bytes_before=\(largeResults.bytesBeforeMaintenance) bytes_after=\(largeResults.bytesAfterMaintenance)"
+        )
+
+        #expect(results.insertedSystemRows == 1_000)
+        #expect(largeResults.insertedSystemRows == 10_000)
+        #expect(largeResults.rankingCount == 1)
+        #expect(largeResults.deletedRows > 0)
+        #expect(largeResults.bytesBeforeMaintenance > 0)
+        #expect(largeResults.bytesAfterMaintenance > 0)
+        #expect(largeResults.insertSeconds.isFinite)
+        #expect(largeResults.rankingSeconds.isFinite)
+        #expect(largeResults.maintenanceSeconds.isFinite)
+    }
+
+    private struct BenchmarkResult {
+        let insertSeconds: Double
+        let rankingSeconds: Double
+        let maintenanceSeconds: Double
+        let bytesBeforeMaintenance: Int
+        let bytesAfterMaintenance: Int
+        let insertedSystemRows: Int64
+        let systemRows: Int64
+        let rankingCount: Int
+        let deletedRows: Int
+    }
+
+    private func benchmark(snapshotCount: Int) throws -> BenchmarkResult {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let policy = DatabaseRetentionPolicy(
+            detailedRetentionDays: 2,
+            hourlyRetentionDays: 30,
+            dailyRetentionDays: 365
+        )
+        let database = Database(
+            databasePath: path,
+            retentionPolicy: policy,
+            logWrites: false
+        )
+        let startDate = referenceDate
+        var lastSnapshotID: Int64?
+
+        let insertStart = Date()
+        for index in 0..<snapshotCount {
+            let date = startDate.addingTimeInterval(Double(index) * 2)
+            lastSnapshotID = try save(
+                database,
+                at: date,
+                cpu: Double(index % 100),
+                memory: Double(40 + index % 30),
+                diskRead: Double(100 + index % 1000),
+                diskWrite: Double(200 + index % 1000),
+                processCount: 2,
+                includeDiskEvent: true
+            )
+        }
+        let insertSeconds = Date().timeIntervalSince(insertStart)
+
+        let rankingStart = Date()
+        let ranking = database.getTopDiskProcesses(
+            snapshotID: lastSnapshotID,
+            limit: 3
+        )
+        let rankingSeconds = Date().timeIntervalSince(rankingStart)
+        let insertedSystemRows = try readInteger(
+            "SELECT COUNT(*) FROM system_samples;",
+            databasePath: path
+        )
+        let bytesBeforeMaintenance = totalDatabaseBytes(path: path)
+
+        let maintenanceStart = Date()
+        let report = try database.performMaintenance(
+            now: startDate.addingTimeInterval(4 * 86_400)
+        )
+        try database.checkpoint()
+        let maintenanceSeconds = Date().timeIntervalSince(maintenanceStart)
+
+        return BenchmarkResult(
+            insertSeconds: insertSeconds,
+            rankingSeconds: rankingSeconds,
+            maintenanceSeconds: maintenanceSeconds,
+            bytesBeforeMaintenance: bytesBeforeMaintenance,
+            bytesAfterMaintenance: totalDatabaseBytes(path: path),
+            insertedSystemRows: insertedSystemRows,
+            systemRows: try readInteger(
+                "SELECT COUNT(*) FROM system_samples;",
+                databasePath: path
+            ),
+            rankingCount: ranking.count,
+            deletedRows: report.totalDeleted
+        )
     }
 }
 

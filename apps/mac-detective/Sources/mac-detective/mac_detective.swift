@@ -123,6 +123,8 @@ struct MacDetective {
         _ = networkCollector.sample()
         _ = processCollector.sample()
 
+        var previousDroppedEventCount = 0
+
         while true {
 
             sleep(2)
@@ -134,6 +136,11 @@ struct MacDetective {
             let network = networkCollector.sample()
             let processes = processCollector.sample()
             let diskEvents = fsUsageCollector.getBufferedEvents()
+            let currentDroppedEventCount = fsUsageCollector.droppedEventCount
+            let droppedEvents = max(
+                0,
+                currentDroppedEventCount - previousDroppedEventCount
+            )
 
             let snapshot = SystemSnapshot(
                 timestamp: Date(),
@@ -143,7 +150,8 @@ struct MacDetective {
                 diskWrite: disk.writeBytesPerSecond,
                 networkIn: network.bytesInPerSecond,
                 networkOut: network.bytesOutPerSecond,
-                processes: processes
+                processes: processes,
+                droppedEvents: droppedEvents
             )
 
             let dateFormatter = DateFormatter()
@@ -169,6 +177,7 @@ struct MacDetective {
                 continue
             }
 
+            previousDroppedEventCount = currentDroppedEventCount
             fsUsageCollector.acknowledgeBufferedEvents(count: diskEvents.count)
 
             let topDiskProcesses = database.getTopDiskProcesses(snapshotID: snapshotID, limit: 3)

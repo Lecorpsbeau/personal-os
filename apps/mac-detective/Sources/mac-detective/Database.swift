@@ -18,13 +18,33 @@ private struct DatabaseOperationError: Error, CustomStringConvertible {
     }
 }
 
+private enum SQLiteBinding {
+    case integer(Int64)
+    case double(Double)
+    case null
+}
+
 final class Database {
 
-    private static let currentSchemaVersion: Int32 = 1
+    private static let currentSchemaVersion: Int32 = 2
 
     private var database: OpaquePointer?
+    private let retentionPolicy: DatabaseRetentionPolicy
+    private let logWrites: Bool
+    private let inMemoryDatabase: Bool
 
-    init(databasePath: String? = nil) {
+    private var systemSampleInsertStatement: OpaquePointer?
+    private var processSampleInsertStatement: OpaquePointer?
+    private var diskProcessEventInsertStatement: OpaquePointer?
+    private var eventInsertStatement: OpaquePointer?
+
+    init(
+        databasePath: String? = nil,
+        retentionPolicy: DatabaseRetentionPolicy = .standard,
+        logWrites: Bool = true
+    ) {
+        self.retentionPolicy = retentionPolicy
+        self.logWrites = logWrites
 
         let fileManager = FileManager.default
         let path: String
@@ -49,6 +69,9 @@ final class Database {
                 .path
         }
 
+        self.inMemoryDatabase = path == ":memory:" ||
+            path.contains("mode=memory")
+
         let openResult = sqlite3_open(path, &database)
 
         guard openResult == SQLITE_OK else {
@@ -68,6 +91,7 @@ final class Database {
     }
 
     deinit {
+        finalizeCachedStatements()
         sqlite3_close(database)
     }
 
@@ -76,12 +100,27 @@ final class Database {
     private func createTables() {
 
         do {
-            try execute(query: "PRAGMA foreign_keys = ON;")
+            try configureConnection()
             try migrateSchema()
             print("Database schema ready (version \(Self.currentSchemaVersion))")
         } catch {
             print("❌ SQLite schema error: \(error)")
         }
+    }
+
+    private func configureConnection() throws {
+        try execute(query: "PRAGMA busy_timeout = 5000;")
+        // The application has one writer and occasional readers. WAL avoids
+        // reader/writer blocking while preserving SQLite transactions.
+        try execute(query: "PRAGMA journal_mode = WAL;")
+        let actualJournalMode = try scalarText("PRAGMA journal_mode;")
+        if !inMemoryDatabase, actualJournalMode.lowercased() != "wal" {
+            throw DatabaseOperationError(
+                operation: "Enable WAL",
+                message: "SQLite reported journal mode \(actualJournalMode)"
+            )
+        }
+        try execute(query: "PRAGMA foreign_keys = ON;")
     }
 
     private func migrateSchema() throws {
@@ -103,6 +142,13 @@ final class Database {
 
         do {
             try createBaseTables()
+
+            if try !tableHasColumn("system_samples", "dropped_events") {
+                try execute(query: """
+                    ALTER TABLE system_samples
+                    ADD COLUMN dropped_events INTEGER NOT NULL DEFAULT 0;
+                """)
+            }
 
             if try !tableHasColumn("process_samples", "disk_read_bytes") {
                 try execute(query: """
@@ -141,6 +187,18 @@ final class Database {
                 ON process_samples(snapshot_id, cpu DESC);
             """)
 
+            try createAggregateTables()
+
+            try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_system_samples_timestamp
+                ON system_samples(timestamp);
+            """)
+
+            try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_events_snapshot_id
+                ON events(snapshot_id);
+            """)
+
             try execute(
                 query: "PRAGMA user_version = \(Self.currentSchemaVersion);"
             )
@@ -162,7 +220,8 @@ final class Database {
                 disk_read REAL NOT NULL,
                 disk_write REAL NOT NULL,
                 network_in REAL NOT NULL,
-                network_out REAL NOT NULL
+                network_out REAL NOT NULL,
+                dropped_events INTEGER NOT NULL DEFAULT 0
             );
         """)
 
@@ -191,6 +250,102 @@ final class Database {
                 value REAL NOT NULL,
                 message TEXT NOT NULL,
                 FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+            );
+        """)
+    }
+
+    private func createAggregateTables() throws {
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS hourly_system_stats (
+                bucket_start REAL NOT NULL PRIMARY KEY,
+                sample_count INTEGER NOT NULL,
+                cpu_avg REAL NOT NULL,
+                cpu_max REAL NOT NULL,
+                memory_avg REAL NOT NULL,
+                memory_max REAL NOT NULL,
+                disk_read_sum REAL NOT NULL,
+                disk_read_avg REAL NOT NULL,
+                disk_read_max REAL NOT NULL,
+                disk_write_sum REAL NOT NULL,
+                disk_write_avg REAL NOT NULL,
+                disk_write_max REAL NOT NULL,
+                network_in_sum REAL NOT NULL,
+                network_in_avg REAL NOT NULL,
+                network_in_max REAL NOT NULL,
+                network_out_sum REAL NOT NULL,
+                network_out_avg REAL NOT NULL,
+                network_out_max REAL NOT NULL,
+                disk_event_count INTEGER NOT NULL,
+                disk_event_bytes INTEGER NOT NULL,
+                anomaly_count INTEGER NOT NULL,
+                dropped_events_sum INTEGER NOT NULL
+            );
+        """)
+
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS daily_system_stats (
+                bucket_start REAL NOT NULL PRIMARY KEY,
+                sample_count INTEGER NOT NULL,
+                cpu_avg REAL NOT NULL,
+                cpu_max REAL NOT NULL,
+                memory_avg REAL NOT NULL,
+                memory_max REAL NOT NULL,
+                disk_read_sum REAL NOT NULL,
+                disk_read_avg REAL NOT NULL,
+                disk_read_max REAL NOT NULL,
+                disk_write_sum REAL NOT NULL,
+                disk_write_avg REAL NOT NULL,
+                disk_write_max REAL NOT NULL,
+                network_in_sum REAL NOT NULL,
+                network_in_avg REAL NOT NULL,
+                network_in_max REAL NOT NULL,
+                network_out_sum REAL NOT NULL,
+                network_out_avg REAL NOT NULL,
+                network_out_max REAL NOT NULL,
+                disk_event_count INTEGER NOT NULL,
+                disk_event_bytes INTEGER NOT NULL,
+                anomaly_count INTEGER NOT NULL,
+                dropped_events_sum INTEGER NOT NULL
+            );
+        """)
+
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS hourly_process_stats (
+                bucket_start REAL NOT NULL,
+                pid INTEGER NOT NULL,
+                process_name TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                cpu_avg REAL NOT NULL,
+                cpu_max REAL NOT NULL,
+                memory_avg REAL NOT NULL,
+                memory_max REAL NOT NULL,
+                disk_read_sum INTEGER NOT NULL,
+                disk_read_avg REAL NOT NULL,
+                disk_read_max INTEGER NOT NULL,
+                disk_write_sum INTEGER NOT NULL,
+                disk_write_avg REAL NOT NULL,
+                disk_write_max INTEGER NOT NULL,
+                PRIMARY KEY (bucket_start, pid, process_name)
+            );
+        """)
+
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS daily_process_stats (
+                bucket_start REAL NOT NULL,
+                pid INTEGER NOT NULL,
+                process_name TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                cpu_avg REAL NOT NULL,
+                cpu_max REAL NOT NULL,
+                memory_avg REAL NOT NULL,
+                memory_max REAL NOT NULL,
+                disk_read_sum INTEGER NOT NULL,
+                disk_read_avg REAL NOT NULL,
+                disk_read_max INTEGER NOT NULL,
+                disk_write_sum INTEGER NOT NULL,
+                disk_write_avg REAL NOT NULL,
+                disk_write_max INTEGER NOT NULL,
+                PRIMARY KEY (bucket_start, pid, process_name)
             );
         """)
     }
@@ -285,6 +440,111 @@ final class Database {
         return result
     }
 
+    @discardableResult
+    private func executeCount(
+        query: String,
+        bindings: [SQLiteBinding]
+    ) throws -> Int {
+        var statement: OpaquePointer?
+        try prepare(
+            query: query,
+            statement: &statement,
+            operation: "Prepare counted statement"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        for (offset, binding) in bindings.enumerated() {
+            let index = Int32(offset + 1)
+            let result: Int32
+
+            switch binding {
+            case .integer(let value):
+                result = sqlite3_bind_int64(statement, index, value)
+            case .double(let value):
+                result = sqlite3_bind_double(statement, index, value)
+            case .null:
+                result = sqlite3_bind_null(statement, index)
+            }
+
+            try checkBind(result, operation: "Bind counted statement")
+        }
+
+        try step(statement, operation: "Execute counted statement")
+
+        guard let database else {
+            throw DatabaseOperationError(
+                operation: "Read changed row count",
+                message: "database is not open"
+            )
+        }
+
+        return Int(sqlite3_changes(database))
+    }
+
+    private func scalarText(_ query: String) throws -> String {
+        var statement: OpaquePointer?
+        try prepare(
+            query: query,
+            statement: &statement,
+            operation: "Read scalar value"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let pointer = sqlite3_column_text(statement, 0) else {
+            throw operationError("Read scalar value")
+        }
+
+        return String(cString: pointer)
+    }
+
+    private func cachedStatement(
+        query: String,
+        current: inout OpaquePointer?,
+        operation: String
+    ) throws -> OpaquePointer {
+        if let current {
+            return current
+        }
+
+        var statement: OpaquePointer?
+        try prepare(
+            query: query,
+            statement: &statement,
+            operation: operation
+        )
+
+        guard let statement else {
+            throw DatabaseOperationError(
+                operation: operation,
+                message: "SQLite returned a null statement"
+            )
+        }
+
+        current = statement
+        return statement
+    }
+
+    private func resetStatement(_ statement: OpaquePointer?) {
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+    }
+
+    private func finalizeCachedStatements() {
+        sqlite3_finalize(systemSampleInsertStatement)
+        sqlite3_finalize(processSampleInsertStatement)
+        sqlite3_finalize(diskProcessEventInsertStatement)
+        sqlite3_finalize(eventInsertStatement)
+    }
+
+    var journalMode: String {
+        (try? scalarText("PRAGMA journal_mode;")) ?? ""
+    }
+
     private func prepare(
         query: String,
         statement: inout OpaquePointer?,
@@ -347,9 +607,11 @@ final class Database {
                 diskProcessEvents: diskProcessEvents
             )
 
-            print(
-                "Snapshot saved to SQLite (\(snapshot.processes.count) processes, \(diskProcessEvents.count) disk events)"
-            )
+            if logWrites {
+                print(
+                    "Snapshot saved to SQLite (\(snapshot.processes.count) processes, \(diskProcessEvents.count) disk events)"
+                )
+            }
             return snapshotID
         } catch {
             print("❌ Impossible d'enregistrer le snapshot: \(error)")
@@ -387,62 +649,71 @@ final class Database {
         _ snapshot: SystemSnapshot
     ) throws -> Int64 {
 
-        let query = """
-        INSERT INTO system_samples (
-            timestamp,
-            cpu,
-            memory,
-            disk_read,
-            disk_write,
-            network_in,
-            network_out
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?);
-        """
-
-        var statement: OpaquePointer?
-        try prepare(
-            query: query,
-            statement: &statement,
+        let statement = try cachedStatement(
+            query: """
+            INSERT INTO system_samples (
+                timestamp,
+                cpu,
+                memory,
+                disk_read,
+                disk_write,
+                network_in,
+                network_out,
+                dropped_events
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            current: &systemSampleInsertStatement,
             operation: "Prepare system sample insert"
         )
-        defer {
-            sqlite3_finalize(statement)
-        }
+        resetStatement(statement)
 
-        try checkBind(
-            sqlite3_bind_double(
-                statement,
-                1,
-                snapshot.timestamp.timeIntervalSince1970
-            ),
-            operation: "Bind system sample timestamp"
-        )
-        try checkBind(
-            sqlite3_bind_double(statement, 2, snapshot.cpu),
-            operation: "Bind system sample CPU"
-        )
-        try checkBind(
-            sqlite3_bind_double(statement, 3, snapshot.memory),
-            operation: "Bind system sample memory"
-        )
-        try checkBind(
-            sqlite3_bind_double(statement, 4, snapshot.diskRead),
-            operation: "Bind system sample disk read"
-        )
-        try checkBind(
-            sqlite3_bind_double(statement, 5, snapshot.diskWrite),
-            operation: "Bind system sample disk write"
-        )
-        try checkBind(
-            sqlite3_bind_double(statement, 6, snapshot.networkIn),
-            operation: "Bind system sample network in"
-        )
-        try checkBind(
-            sqlite3_bind_double(statement, 7, snapshot.networkOut),
-            operation: "Bind system sample network out"
-        )
-        try step(statement, operation: "Insert system sample")
+        do {
+            try checkBind(
+                sqlite3_bind_double(
+                    statement,
+                    1,
+                    snapshot.timestamp.timeIntervalSince1970
+                ),
+                operation: "Bind system sample timestamp"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 2, snapshot.cpu),
+                operation: "Bind system sample CPU"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 3, snapshot.memory),
+                operation: "Bind system sample memory"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 4, snapshot.diskRead),
+                operation: "Bind system sample disk read"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 5, snapshot.diskWrite),
+                operation: "Bind system sample disk write"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 6, snapshot.networkIn),
+                operation: "Bind system sample network in"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 7, snapshot.networkOut),
+                operation: "Bind system sample network out"
+            )
+            try checkBind(
+                sqlite3_bind_int64(
+                    statement,
+                    8,
+                    Int64(snapshot.droppedEvents)
+                ),
+                operation: "Bind system sample dropped events"
+            )
+            try step(statement, operation: "Insert system sample")
+        } catch {
+            resetStatement(statement)
+            throw error
+        }
 
         guard let database else {
             throw DatabaseOperationError(
@@ -451,7 +722,9 @@ final class Database {
             )
         }
 
-        return sqlite3_last_insert_rowid(database)
+        let snapshotID = sqlite3_last_insert_rowid(database)
+        resetStatement(statement)
+        return snapshotID
     }
 
     private func insertProcessSamples(
@@ -464,95 +737,95 @@ final class Database {
             return
         }
 
-        let query = """
-        INSERT INTO process_samples (
-            snapshot_id,
-            timestamp,
-            pid,
-            name,
-            cpu,
-            memory,
-            disk_read_bytes,
-            disk_write_bytes
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        """
-
-        var statement: OpaquePointer?
-        try prepare(
-            query: query,
-            statement: &statement,
+        let statement = try cachedStatement(
+            query: """
+            INSERT INTO process_samples (
+                snapshot_id,
+                timestamp,
+                pid,
+                name,
+                cpu,
+                memory,
+                disk_read_bytes,
+                disk_write_bytes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            current: &processSampleInsertStatement,
             operation: "Prepare process sample insert"
         )
-        defer {
-            sqlite3_finalize(statement)
+
+        do {
+            for process in processes {
+                resetStatement(statement)
+
+                try checkBind(
+                    sqlite3_bind_int64(statement, 1, snapshotID),
+                    operation: "Bind process snapshot ID"
+                )
+                try checkBind(
+                    sqlite3_bind_double(
+                        statement,
+                        2,
+                        timestamp.timeIntervalSince1970
+                    ),
+                    operation: "Bind process timestamp"
+                )
+                try checkBind(
+                    sqlite3_bind_int(statement, 3, process.pid),
+                    operation: "Bind process PID"
+                )
+                try bindText(
+                    process.name,
+                    to: statement,
+                    at: 4,
+                    operation: "Bind process name"
+                )
+                try checkBind(
+                    sqlite3_bind_double(statement, 5, process.cpuUsage),
+                    operation: "Bind process CPU"
+                )
+                try checkBind(
+                    sqlite3_bind_int64(
+                        statement,
+                        6,
+                        try int64Value(
+                            process.memoryBytes,
+                            operation: "Encode process memory"
+                        )
+                    ),
+                    operation: "Bind process memory"
+                )
+                try checkBind(
+                    sqlite3_bind_int64(
+                        statement,
+                        7,
+                        try int64Value(
+                            process.diskReadBytes,
+                            operation: "Encode process disk read"
+                        )
+                    ),
+                    operation: "Bind process disk read"
+                )
+                try checkBind(
+                    sqlite3_bind_int64(
+                        statement,
+                        8,
+                        try int64Value(
+                            process.diskWriteBytes,
+                            operation: "Encode process disk write"
+                        )
+                    ),
+                    operation: "Bind process disk write"
+                )
+                try step(statement, operation: "Insert process sample")
+            }
+        } catch {
+            resetStatement(statement)
+            throw error
         }
 
-        for process in processes {
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
-
-            try checkBind(
-                sqlite3_bind_int64(statement, 1, snapshotID),
-                operation: "Bind process snapshot ID"
-            )
-            try checkBind(
-                sqlite3_bind_double(
-                    statement,
-                    2,
-                    timestamp.timeIntervalSince1970
-                ),
-                operation: "Bind process timestamp"
-            )
-            try checkBind(
-                sqlite3_bind_int(statement, 3, process.pid),
-                operation: "Bind process PID"
-            )
-            try bindText(
-                process.name,
-                to: statement,
-                at: 4,
-                operation: "Bind process name"
-            )
-            try checkBind(
-                sqlite3_bind_double(statement, 5, process.cpuUsage),
-                operation: "Bind process CPU"
-            )
-            try checkBind(
-                sqlite3_bind_int64(
-                    statement,
-                    6,
-                    try int64Value(
-                        process.memoryBytes,
-                        operation: "Encode process memory"
-                    )
-                ),
-                operation: "Bind process memory"
-            )
-            try checkBind(
-                sqlite3_bind_int64(
-                    statement,
-                    7,
-                    try int64Value(
-                        process.diskReadBytes,
-                        operation: "Encode process disk read"
-                    )
-                ),
-                operation: "Bind process disk read"
-            )
-            try checkBind(
-                sqlite3_bind_int64(
-                    statement,
-                    8,
-                    try int64Value(
-                        process.diskWriteBytes,
-                        operation: "Encode process disk write"
-                    )
-                ),
-                operation: "Bind process disk write"
-            )
-            try step(statement, operation: "Insert process sample")
-        }
+        resetStatement(statement)
     }
 
     private func insertDiskProcessEvents(
@@ -564,81 +837,370 @@ final class Database {
             return
         }
 
-        let query = """
-        INSERT INTO disk_process_events (
-            snapshot_id,
-            timestamp,
-            operation,
-            bytes,
-            process_name,
-            pid
-        )
-        VALUES (?, ?, ?, ?, ?, ?);
-        """
-
-        var statement: OpaquePointer?
-        try prepare(
-            query: query,
-            statement: &statement,
+        let statement = try cachedStatement(
+            query: """
+            INSERT INTO disk_process_events (
+                snapshot_id,
+                timestamp,
+                operation,
+                bytes,
+                process_name,
+                pid
+            )
+            VALUES (?, ?, ?, ?, ?, ?);
+            """,
+            current: &diskProcessEventInsertStatement,
             operation: "Prepare disk process event insert"
         )
-        defer {
-            sqlite3_finalize(statement)
+
+        do {
+            for event in events {
+                resetStatement(statement)
+
+                if let snapshotID {
+                    try checkBind(
+                        sqlite3_bind_int64(statement, 1, snapshotID),
+                        operation: "Bind disk event snapshot ID"
+                    )
+                } else {
+                    try checkBind(
+                        sqlite3_bind_null(statement, 1),
+                        operation: "Bind null disk event snapshot ID"
+                    )
+                }
+
+                try checkBind(
+                    sqlite3_bind_double(
+                        statement,
+                        2,
+                        event.timestamp.timeIntervalSince1970
+                    ),
+                    operation: "Bind disk event timestamp"
+                )
+                try bindText(
+                    event.operation,
+                    to: statement,
+                    at: 3,
+                    operation: "Bind disk event operation"
+                )
+                try checkBind(
+                    sqlite3_bind_int64(
+                        statement,
+                        4,
+                        try int64Value(
+                            event.bytes,
+                            operation: "Encode disk event bytes"
+                        )
+                    ),
+                    operation: "Bind disk event bytes"
+                )
+                try bindText(
+                    event.processName,
+                    to: statement,
+                    at: 5,
+                    operation: "Bind disk event process name"
+                )
+                try checkBind(
+                    sqlite3_bind_int(statement, 6, event.pid),
+                    operation: "Bind disk event PID"
+                )
+                try step(statement, operation: "Insert disk process event")
+            }
+        } catch {
+            resetStatement(statement)
+            throw error
         }
 
-        for event in events {
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
+        resetStatement(statement)
+    }
 
-            if let snapshotID {
-                try checkBind(
-                    sqlite3_bind_int64(statement, 1, snapshotID),
-                    operation: "Bind disk event snapshot ID"
-                )
-            } else {
-                try checkBind(
-                    sqlite3_bind_null(statement, 1),
-                    operation: "Bind null disk event snapshot ID"
+    // MARK: - Aggregation and retention
+
+    private func refreshSystemStats(
+        table: String,
+        bucketModifier: String
+    ) throws -> Int {
+        let bucketExpression: String
+        switch bucketModifier {
+        case "hour":
+            bucketExpression = """
+                CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', s.timestamp, 'unixepoch')) AS REAL)
+            """
+        case "day":
+            bucketExpression = """
+                CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', s.timestamp, 'unixepoch')) AS REAL)
+            """
+        default:
+            throw DatabaseOperationError(
+                operation: "Build aggregate bucket",
+                message: "Unsupported bucket modifier \(bucketModifier)"
+            )
+        }
+
+        let query = """
+        INSERT OR REPLACE INTO \(table) (
+            bucket_start,
+            sample_count,
+            cpu_avg,
+            cpu_max,
+            memory_avg,
+            memory_max,
+            disk_read_sum,
+            disk_read_avg,
+            disk_read_max,
+            disk_write_sum,
+            disk_write_avg,
+            disk_write_max,
+            network_in_sum,
+            network_in_avg,
+            network_in_max,
+            network_out_sum,
+            network_out_avg,
+            network_out_max,
+            disk_event_count,
+            disk_event_bytes,
+            anomaly_count,
+            dropped_events_sum
+        )
+        SELECT
+            \(bucketExpression) AS bucket_start,
+            COUNT(*) AS sample_count,
+            AVG(s.cpu) AS cpu_avg,
+            MAX(s.cpu) AS cpu_max,
+            AVG(s.memory) AS memory_avg,
+            MAX(s.memory) AS memory_max,
+            SUM(s.disk_read) AS disk_read_sum,
+            AVG(s.disk_read) AS disk_read_avg,
+            MAX(s.disk_read) AS disk_read_max,
+            SUM(s.disk_write) AS disk_write_sum,
+            AVG(s.disk_write) AS disk_write_avg,
+            MAX(s.disk_write) AS disk_write_max,
+            SUM(s.network_in) AS network_in_sum,
+            AVG(s.network_in) AS network_in_avg,
+            MAX(s.network_in) AS network_in_max,
+            SUM(s.network_out) AS network_out_sum,
+            AVG(s.network_out) AS network_out_avg,
+            MAX(s.network_out) AS network_out_max,
+            COALESCE(SUM(d.event_count), 0) AS disk_event_count,
+            COALESCE(SUM(d.event_bytes), 0) AS disk_event_bytes,
+            COALESCE(SUM(e.anomaly_count), 0) AS anomaly_count,
+            COALESCE(SUM(s.dropped_events), 0) AS dropped_events_sum
+        FROM system_samples s
+        LEFT JOIN (
+            SELECT
+                snapshot_id,
+                COUNT(*) AS event_count,
+                COALESCE(SUM(bytes), 0) AS event_bytes
+            FROM disk_process_events
+            WHERE snapshot_id IS NOT NULL
+            GROUP BY snapshot_id
+        ) d ON d.snapshot_id = s.id
+        LEFT JOIN (
+            SELECT
+                snapshot_id,
+                COUNT(*) AS anomaly_count
+            FROM events
+            GROUP BY snapshot_id
+        ) e ON e.snapshot_id = s.id
+        GROUP BY bucket_start;
+        """
+
+        return try executeCount(query: query, bindings: [])
+    }
+
+    private func refreshProcessStats(
+        table: String,
+        bucketModifier: String
+    ) throws -> Int {
+        let bucketExpression: String
+        switch bucketModifier {
+        case "hour":
+            bucketExpression = """
+                CAST(strftime('%s', strftime('%Y-%m-%d %H:00:00', timestamp, 'unixepoch')) AS REAL)
+            """
+        case "day":
+            bucketExpression = """
+                CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', timestamp, 'unixepoch')) AS REAL)
+            """
+        default:
+            throw DatabaseOperationError(
+                operation: "Build process aggregate bucket",
+                message: "Unsupported bucket modifier \(bucketModifier)"
+            )
+        }
+
+        let query = """
+        INSERT OR REPLACE INTO \(table) (
+            bucket_start,
+            pid,
+            process_name,
+            sample_count,
+            cpu_avg,
+            cpu_max,
+            memory_avg,
+            memory_max,
+            disk_read_sum,
+            disk_read_avg,
+            disk_read_max,
+            disk_write_sum,
+            disk_write_avg,
+            disk_write_max
+        )
+        SELECT
+            \(bucketExpression) AS bucket_start,
+            pid,
+            name AS process_name,
+            COUNT(*) AS sample_count,
+            AVG(cpu) AS cpu_avg,
+            MAX(cpu) AS cpu_max,
+            AVG(memory) AS memory_avg,
+            MAX(memory) AS memory_max,
+            SUM(disk_read_bytes) AS disk_read_sum,
+            AVG(disk_read_bytes) AS disk_read_avg,
+            MAX(disk_read_bytes) AS disk_read_max,
+            SUM(disk_write_bytes) AS disk_write_sum,
+            AVG(disk_write_bytes) AS disk_write_avg,
+            MAX(disk_write_bytes) AS disk_write_max
+        FROM process_samples
+        GROUP BY bucket_start, pid, name;
+        """
+
+        return try executeCount(query: query, bindings: [])
+    }
+
+    private func refreshAggregates() throws -> (
+        hourlySystem: Int,
+        hourlyProcess: Int,
+        dailySystem: Int,
+        dailyProcess: Int
+    ) {
+        (
+            try refreshSystemStats(
+                table: "hourly_system_stats",
+                bucketModifier: "hour"
+            ),
+            try refreshProcessStats(
+                table: "hourly_process_stats",
+                bucketModifier: "hour"
+            ),
+            try refreshSystemStats(
+                table: "daily_system_stats",
+                bucketModifier: "day"
+            ),
+            try refreshProcessStats(
+                table: "daily_process_stats",
+                bucketModifier: "day"
+            )
+        )
+    }
+
+    func performMaintenance(now: Date = Date()) throws -> DatabaseMaintenanceReport {
+        let detailedCutoff = retentionPolicy.cutoff(
+            afterDays: retentionPolicy.detailedRetentionDays,
+            now: now
+        )
+        let hourlyCutoff = retentionPolicy.cutoff(
+            afterDays: retentionPolicy.hourlyRetentionDays,
+            now: now
+        )
+        let dailyCutoff = retentionPolicy.cutoff(
+            afterDays: retentionPolicy.dailyRetentionDays,
+            now: now
+        )
+
+        try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
+
+        do {
+            // Aggregate before deleting detailed rows. Re-running maintenance
+            // is safe because INSERT OR REPLACE refreshes existing buckets.
+            let refreshed = try refreshAggregates()
+
+            let deletedProcessSamples = try executeCount(
+                query: """
+                DELETE FROM process_samples
+                WHERE snapshot_id IN (
+                    SELECT id FROM system_samples WHERE timestamp < ?
+                );
+                """,
+                bindings: [.double(detailedCutoff.timeIntervalSince1970)]
+            )
+            let deletedDiskProcessEvents = try executeCount(
+                query: """
+                DELETE FROM disk_process_events
+                WHERE (
+                    snapshot_id IS NULL AND timestamp < ?
+                ) OR snapshot_id IN (
+                    SELECT id FROM system_samples WHERE timestamp < ?
+                );
+                """,
+                bindings: [
+                    .double(detailedCutoff.timeIntervalSince1970),
+                    .double(detailedCutoff.timeIntervalSince1970)
+                ]
+            )
+            let deletedEvents = try executeCount(
+                query: """
+                DELETE FROM events
+                WHERE snapshot_id IN (
+                    SELECT id FROM system_samples WHERE timestamp < ?
+                );
+                """,
+                bindings: [.double(detailedCutoff.timeIntervalSince1970)]
+            )
+            let deletedSystemSamples = try executeCount(
+                query: "DELETE FROM system_samples WHERE timestamp < ?;",
+                bindings: [.double(detailedCutoff.timeIntervalSince1970)]
+            )
+
+            let deletedHourlySystemStats = try executeCount(
+                query: "DELETE FROM hourly_system_stats WHERE bucket_start < ?;",
+                bindings: [.double(hourlyCutoff.timeIntervalSince1970)]
+            )
+            let deletedHourlyProcessStats = try executeCount(
+                query: "DELETE FROM hourly_process_stats WHERE bucket_start < ?;",
+                bindings: [.double(hourlyCutoff.timeIntervalSince1970)]
+            )
+            let deletedDailySystemStats = try executeCount(
+                query: "DELETE FROM daily_system_stats WHERE bucket_start < ?;",
+                bindings: [.double(dailyCutoff.timeIntervalSince1970)]
+            )
+            let deletedDailyProcessStats = try executeCount(
+                query: "DELETE FROM daily_process_stats WHERE bucket_start < ?;",
+                bindings: [.double(dailyCutoff.timeIntervalSince1970)]
+            )
+
+            try execute(query: "COMMIT;")
+
+            let report = DatabaseMaintenanceReport(
+                deletedSystemSamples: deletedSystemSamples,
+                deletedProcessSamples: deletedProcessSamples,
+                deletedDiskProcessEvents: deletedDiskProcessEvents,
+                deletedEvents: deletedEvents,
+                deletedHourlySystemStats: deletedHourlySystemStats,
+                deletedHourlyProcessStats: deletedHourlyProcessStats,
+                deletedDailySystemStats: deletedDailySystemStats,
+                deletedDailyProcessStats: deletedDailyProcessStats,
+                refreshedHourlySystemStats: refreshed.hourlySystem,
+                refreshedHourlyProcessStats: refreshed.hourlyProcess,
+                refreshedDailySystemStats: refreshed.dailySystem,
+                refreshedDailyProcessStats: refreshed.dailyProcess
+            )
+
+            if logWrites {
+                print(
+                    "Database maintenance: \(report.totalDeleted) rows deleted"
                 )
             }
 
-            try checkBind(
-                sqlite3_bind_double(
-                    statement,
-                    2,
-                    event.timestamp.timeIntervalSince1970
-                ),
-                operation: "Bind disk event timestamp"
-            )
-            try bindText(
-                event.operation,
-                to: statement,
-                at: 3,
-                operation: "Bind disk event operation"
-            )
-            try checkBind(
-                sqlite3_bind_int64(
-                    statement,
-                    4,
-                    try int64Value(
-                        event.bytes,
-                        operation: "Encode disk event bytes"
-                    )
-                ),
-                operation: "Bind disk event bytes"
-            )
-            try bindText(
-                event.processName,
-                to: statement,
-                at: 5,
-                operation: "Bind disk event process name"
-            )
-            try checkBind(
-                sqlite3_bind_int(statement, 6, event.pid),
-                operation: "Bind disk event PID"
-            )
-            try step(statement, operation: "Insert disk process event")
+            return report
+        } catch {
+            _ = try? execute(query: "ROLLBACK;")
+            throw error
         }
+    }
+
+    func checkpoint() throws {
+        try execute(query: "PRAGMA wal_checkpoint(PASSIVE);")
     }
 
     private func bindText(
@@ -707,90 +1269,70 @@ final class Database {
         snapshotID: Int64,
         timestamp: Date
     ) {
-
-        let query = """
-        INSERT INTO events (
-            snapshot_id,
-            timestamp,
-            type,
-            severity,
-            value,
-            message
-        )
-        VALUES (?, ?, ?, ?, ?, ?);
-        """
-
-        var statement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(
-            database,
-            query,
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            print("❌ Impossible de préparer l'événement")
-            return
-        }
-
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        sqlite3_bind_int64(
-            statement,
-            1,
-            snapshotID
-        )
-
-        sqlite3_bind_double(
-            statement,
-            2,
-            timestamp.timeIntervalSince1970
-        )
-
-        event.type.withCString { pointer in
-            _ = sqlite3_bind_text(
-                statement,
-                3,
-                pointer,
-                -1,
-                sqliteTransient
+        do {
+            let statement = try cachedStatement(
+                query: """
+                INSERT INTO events (
+                    snapshot_id,
+                    timestamp,
+                    type,
+                    severity,
+                    value,
+                    message
+                )
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                current: &eventInsertStatement,
+                operation: "Prepare event insert"
             )
-        }
+            resetStatement(statement)
 
-        event.severity.withCString { pointer in
-            _ = sqlite3_bind_text(
-                statement,
-                4,
-                pointer,
-                -1,
-                sqliteTransient
+            try checkBind(
+                sqlite3_bind_int64(statement, 1, snapshotID),
+                operation: "Bind event snapshot ID"
             )
-        }
-
-        sqlite3_bind_double(
-            statement,
-            5,
-            event.value
-        )
-
-        event.message.withCString { pointer in
-            _ = sqlite3_bind_text(
-                statement,
-                6,
-                pointer,
-                -1,
-                sqliteTransient
+            try checkBind(
+                sqlite3_bind_double(
+                    statement,
+                    2,
+                    timestamp.timeIntervalSince1970
+                ),
+                operation: "Bind event timestamp"
             )
-        }
+            try bindText(
+                event.type,
+                to: statement,
+                at: 3,
+                operation: "Bind event type"
+            )
+            try bindText(
+                event.severity,
+                to: statement,
+                at: 4,
+                operation: "Bind event severity"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 5, event.value),
+                operation: "Bind event value"
+            )
+            try bindText(
+                event.message,
+                to: statement,
+                at: 6,
+                operation: "Bind event message"
+            )
+            try step(statement, operation: "Insert event")
+            resetStatement(statement)
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            print("❌ Impossible d'enregistrer l'événement")
-            return
+            if logWrites {
+                print("⚠️ Event saved to SQLite: \(event.type)")
+            }
+        } catch {
+            resetStatement(eventInsertStatement)
+            if logWrites {
+                print("❌ Impossible d'enregistrer l'événement: \(error)")
+            }
         }
-
-        print("⚠️ Event saved to SQLite: \(event.type)")
     }
 
 
