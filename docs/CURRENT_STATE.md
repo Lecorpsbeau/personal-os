@@ -19,29 +19,19 @@ In active development.
 - SQLite snapshots
 - Event/history system
 - Periodic sampling
+- FSUsageParser (fs_usage diskio parsing)
+- FSUsageCollector (fs_usage pipeline integration & thread-safe buffering)
+- DiskProcessEvent persistence (SQLite disk_process_events table & query API)
+- Disk I/O ranking (getTopDiskProcesses → DiskProcessSummary, per-interval console output)
 
 ## Current task
 
-Implement process-level Disk I/O monitoring.
-
-The goal is to identify which processes are responsible for disk activity, not only global disk usage.
+M001–M004 complete. Next: disk activity detector rules, or define M005.
 
 ## Current blocker
 
-The project currently fails to compile with:
+None.
 
-`cannot find 'FSUsageParser' in scope`
-
-Location:
-
-`apps/mac-detective/Sources/mac-detective/mac_detective.swift`
-
-Relevant code:
-
-```swift
-let parser = FSUsageParser()
-bash
-cat > docs/ROADMAP.md <<'EOF'
 # Personal OS — Roadmap
 
 ## Phase 1 — Mac Detective
@@ -58,10 +48,11 @@ Status: IN PROGRESS
 - [x] Periodic sampling
 
 ### Disk I/O
-- [ ] Process-level Disk I/O
-- [ ] FSUsageParser
-- [ ] Disk I/O history
-- [ ] Disk activity ranking
+- [x] FSUsageParser
+- [x] FSUsageCollector integration
+- [x] Process-level Disk I/O persistence
+- [x] Disk I/O history & ranking (getTopDiskProcesses, DiskProcessSummary)
+- [ ] Disk activity detector rules
 - [ ] Tests
 - [ ] Stable release
 

@@ -106,27 +106,15 @@ final class ProcessCollector {
                 UInt64(taskInfo.pti_total_user) +
                 UInt64(taskInfo.pti_total_system)
 
-            // MARK: - Disk I/O
+            // MARK: - Disk I/O (cumulative lifetime bytes via proc_pid_rusage)
             //
-            // Temporarily disabled.
-            // proc_pid_rusage caused an unsafe pointer crash
-            // on this Swift/macOS SDK combination.
-            //
-            // We will implement process-level disk I/O
-            // through a safer bridge later.
-            // MARK: - Disk I/O
+            // get_process_disk_io() wraps proc_pid_rusage(RUSAGE_INFO_V4).
+            // It returns 0 on success. Non-zero means the process is gone
+            // or we lack permissions — treat as unavailable, not a crash.
 
-            var readBytes: UInt64 = 0
-            var writeBytes: UInt64 = 0
-
-         
-            if readBytes > 0 || writeBytes > 0 {
-                print(
-                    "DISK | \(name) | " +
-                    "READ \(readBytes) | " +
-                    "WRITE \(writeBytes)"
-                )
-            }
+            var rawReadBytes: UInt64 = 0
+            var rawWriteBytes: UInt64 = 0
+            let diskResult = get_process_disk_io(pid, &rawReadBytes, &rawWriteBytes)
 
             // MARK: - Calculate rates
 
@@ -158,23 +146,23 @@ final class ProcessCollector {
                             (cpuSeconds / elapsed) * 100.0
                     }
 
-                    // Disk Read
+                    // Disk Read delta (only meaningful if this sample succeeded)
 
-                    if let previousRead = previousReadBytes[pid] {
-
+                    if diskResult == 0,
+                       let previousRead = previousReadBytes[pid] {
                         diskReadBytes =
-                            readBytes >= previousRead
-                            ? readBytes - previousRead
+                            rawReadBytes >= previousRead
+                            ? rawReadBytes - previousRead
                             : 0
                     }
 
-                    // Disk Write
+                    // Disk Write delta
 
-                    if let previousWrite = previousWriteBytes[pid] {
-
+                    if diskResult == 0,
+                       let previousWrite = previousWriteBytes[pid] {
                         diskWriteBytes =
-                            writeBytes >= previousWrite
-                            ? writeBytes - previousWrite
+                            rawWriteBytes >= previousWrite
+                            ? rawWriteBytes - previousWrite
                             : 0
                     }
                 }
@@ -183,8 +171,14 @@ final class ProcessCollector {
             // MARK: - Save previous values
 
             previousCPUTime[pid] = cpuTime
-            previousReadBytes[pid] = readBytes
-            previousWriteBytes[pid] = writeBytes
+
+            // Only update disk baseline when the call succeeded.
+            // If the process is gone next sample, the stale baseline
+            // is harmless — delta will be 0.
+            if diskResult == 0 {
+                previousReadBytes[pid]  = rawReadBytes
+                previousWriteBytes[pid] = rawWriteBytes
+            }
 
             // MARK: - Snapshot
 

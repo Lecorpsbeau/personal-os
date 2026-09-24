@@ -133,6 +133,9 @@ struct MacDetective {
         let parser = FSUsageParser()
         parser.test()
 
+        let fsUsageCollector = FSUsageCollector(parser: parser)
+        fsUsageCollector.start()
+
         print("")
         print("Mac Detective — Monitoring")
         print("--------------------------")
@@ -155,6 +158,7 @@ struct MacDetective {
             let disk = diskCollector.sample()
             let network = networkCollector.sample()
             let processes = processCollector.sample()
+            let diskEvents = fsUsageCollector.drainEvents()
 
             let snapshot = SystemSnapshot(
                 timestamp: Date(),
@@ -177,8 +181,28 @@ struct MacDetective {
                 "Disk ↓ \(String(format: "%.1f", disk.readBytesPerSecond / 1_000_000)) MB/s | " +
                 "Disk ↑ \(String(format: "%.1f", disk.writeBytesPerSecond / 1_000_000)) MB/s"
             )
+
+            if !diskEvents.isEmpty {
+                let totalBytes = diskEvents.reduce(0) { $0 + $1.bytes }
+                print("   💾 fs_usage: \(diskEvents.count) disk events (\(String(format: "%.1f", Double(totalBytes) / 1_000_000)) MB)")
+            }
+
             guard let snapshotID = database.save(snapshot: snapshot) else {
                 continue
+            }
+
+            database.saveDiskProcessEvents(diskEvents, snapshotID: snapshotID)
+
+            let topDiskProcesses = database.getTopDiskProcesses(snapshotID: snapshotID, limit: 3)
+            if !topDiskProcesses.isEmpty {
+                print("   💾 Disk activity (fs_usage):")
+                for summary in topDiskProcesses {
+                    print(
+                        "      \(summary.processName) [\(summary.pid)]" +
+                        "  ↓ \(String(format: "%.2f", Double(summary.readBytes) / 1_000_000)) MB" +
+                        "  ↑ \(String(format: "%.2f", Double(summary.writeBytes) / 1_000_000)) MB"
+                    )
+                }
             }
 
             let detectedEvents = detector.detect(snapshot: snapshot)

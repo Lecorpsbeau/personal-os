@@ -5,30 +5,36 @@ final class Database {
 
     private var database: OpaquePointer?
 
-    init() {
+    init(databasePath: String? = nil) {
 
         let fileManager = FileManager.default
+        let path: String
 
-        let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        if let databasePath {
+            path = databasePath
+        } else {
+            let projectRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
 
-        let databaseDirectory = projectRoot
-            .appendingPathComponent("data/database", isDirectory: true)
+            let databaseDirectory = projectRoot
+                .appendingPathComponent("data/database", isDirectory: true)
 
-        try? fileManager.createDirectory(
-            at: databaseDirectory,
-            withIntermediateDirectories: true
-        )
+            try? fileManager.createDirectory(
+                at: databaseDirectory,
+                withIntermediateDirectories: true
+            )
 
-        let databaseURL = databaseDirectory
-            .appendingPathComponent("mac_detective.sqlite")
+            path = databaseDirectory
+                .appendingPathComponent("mac_detective.sqlite")
+                .path
+        }
 
-        if sqlite3_open(databaseURL.path, &database) != SQLITE_OK {
+        if sqlite3_open(path, &database) != SQLITE_OK {
             print("❌ Impossible d'ouvrir SQLite")
         } else {
             print("SQLite database:")
-            print(databaseURL.path)
+            print(path)
         }
 
         createTables()
@@ -64,6 +70,8 @@ final class Database {
             name TEXT NOT NULL,
             cpu REAL NOT NULL,
             memory INTEGER NOT NULL,
+            disk_read_bytes INTEGER NOT NULL DEFAULT 0,
+            disk_write_bytes INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
         );
         """
@@ -81,9 +89,42 @@ final class Database {
         );
         """
 
+        let diskProcessEventQuery = """
+        CREATE TABLE IF NOT EXISTS disk_process_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER,
+            timestamp REAL NOT NULL,
+            operation TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            process_name TEXT NOT NULL,
+            pid INTEGER NOT NULL,
+            FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+        );
+        """
+
+        let diskProcessEventIndex = """
+        CREATE INDEX IF NOT EXISTS idx_disk_process_events_snapshot_id
+        ON disk_process_events(snapshot_id);
+        """
+
         execute(query: systemQuery)
         execute(query: processQuery)
         execute(query: eventQuery)
+        execute(query: diskProcessEventQuery)
+        execute(query: diskProcessEventIndex)
+
+        // Additive migrations: add disk I/O columns to existing databases.
+        // ALTER TABLE ... ADD COLUMN is idempotent when the column already
+        // exists in a freshly-created table; we silence the "duplicate column"
+        // error intentionally.
+        execute(query: """
+            ALTER TABLE process_samples
+            ADD COLUMN disk_read_bytes INTEGER NOT NULL DEFAULT 0;
+        """)
+        execute(query: """
+            ALTER TABLE process_samples
+            ADD COLUMN disk_write_bytes INTEGER NOT NULL DEFAULT 0;
+        """)
 
         print("Database schema ready")
     }
@@ -229,9 +270,11 @@ final class Database {
             pid,
             name,
             cpu,
-            memory
+            memory,
+            disk_read_bytes,
+            disk_write_bytes
         )
-        VALUES (?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
 
         var statement: OpaquePointer?
@@ -269,16 +312,6 @@ final class Database {
             process.pid
         )
 
-        process.name.withCString { namePointer in
-            sqlite3_bind_text(
-                statement,
-                4,
-                namePointer,
-                -1,
-                nil
-            )
-        }
-
         sqlite3_bind_double(
             statement,
             5,
@@ -291,7 +324,28 @@ final class Database {
             Int64(process.memoryBytes)
         )
 
-        _ = sqlite3_step(statement)
+        sqlite3_bind_int64(
+            statement,
+            7,
+            Int64(process.diskReadBytes)
+        )
+
+        sqlite3_bind_int64(
+            statement,
+            8,
+            Int64(process.diskWriteBytes)
+        )
+
+        process.name.withCString { namePointer in
+            sqlite3_bind_text(
+                statement,
+                4,
+                namePointer,
+                -1,
+                nil
+            )
+            _ = sqlite3_step(statement)
+        }
     }
 
     func saveEvent(
@@ -392,7 +446,7 @@ final class Database {
     ) -> [ProcessSnapshot] {
 
         let query = """
-        SELECT pid, name, cpu, memory
+        SELECT pid, name, cpu, memory, disk_read_bytes, disk_write_bytes
         FROM process_samples
         WHERE snapshot_id = ?
         ORDER BY cpu DESC
@@ -437,18 +491,291 @@ final class Database {
                 sqlite3_column_int64(statement, 3)
             )
 
+            let diskRead  = UInt64(sqlite3_column_int64(statement, 4))
+            let diskWrite = UInt64(sqlite3_column_int64(statement, 5))
+
             processes.append(
                 ProcessSnapshot(
                     pid: pid,
                     name: name,
                     cpuUsage: cpu,
                     memoryBytes: memory,
-                    diskReadBytes: 0,
-                    diskWriteBytes: 0
+                    diskReadBytes: diskRead,
+                    diskWriteBytes: diskWrite
                 )
             )
         }
 
         return processes
     }
+
+    // MARK: - Disk Process Events
+
+    @discardableResult
+    func saveDiskProcessEvent(
+        _ event: DiskProcessEvent,
+        snapshotID: Int64? = nil
+    ) -> Bool {
+        return saveDiskProcessEvents([event], snapshotID: snapshotID) == 1
+    }
+
+    @discardableResult
+    func saveDiskProcessEvents(
+        _ events: [DiskProcessEvent],
+        snapshotID: Int64? = nil
+    ) -> Int {
+
+        guard !events.isEmpty else {
+            return 0
+        }
+
+        let query = """
+        INSERT INTO disk_process_events (
+            snapshot_id,
+            timestamp,
+            operation,
+            bytes,
+            process_name,
+            pid
+        )
+        VALUES (?, ?, ?, ?, ?, ?);
+        """
+
+        var statement: OpaquePointer?
+
+        guard sqlite3_prepare_v2(
+            database,
+            query,
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            print("❌ Impossible de préparer l'insertion du disk_process_event")
+            return 0
+        }
+
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        execute(query: "BEGIN TRANSACTION;")
+        var insertedCount = 0
+
+        for event in events {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+
+            if let snapshotID {
+                sqlite3_bind_int64(statement, 1, snapshotID)
+            } else {
+                sqlite3_bind_null(statement, 1)
+            }
+
+            sqlite3_bind_double(
+                statement,
+                2,
+                event.timestamp.timeIntervalSince1970
+            )
+
+            sqlite3_bind_int64(
+                statement,
+                4,
+                Int64(event.bytes)
+            )
+
+            sqlite3_bind_int(
+                statement,
+                6,
+                event.pid
+            )
+
+            event.operation.withCString { opPointer in
+                sqlite3_bind_text(
+                    statement,
+                    3,
+                    opPointer,
+                    -1,
+                    nil
+                )
+
+                event.processName.withCString { namePointer in
+                    sqlite3_bind_text(
+                        statement,
+                        5,
+                        namePointer,
+                        -1,
+                        nil
+                    )
+
+                    if sqlite3_step(statement) == SQLITE_DONE {
+                        insertedCount += 1
+                    } else {
+                        print("❌ Impossible d'enregistrer le disk_process_event")
+                    }
+                }
+            }
+        }
+
+        execute(query: "COMMIT;")
+        return insertedCount
+    }
+
+    func getDiskProcessEvents(
+        snapshotID: Int64? = nil,
+        limit: Int = 100
+    ) -> [DiskProcessEvent] {
+
+        var query = """
+        SELECT timestamp, operation, bytes, process_name, pid
+        FROM disk_process_events
+        """
+
+        if snapshotID != nil {
+            query += " WHERE snapshot_id = ?"
+        }
+
+        query += " ORDER BY id ASC LIMIT ?;"
+
+        var statement: OpaquePointer?
+
+        guard sqlite3_prepare_v2(
+            database,
+            query,
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            print("❌ Impossible de lire les disk_process_events")
+            return []
+        }
+
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        var bindIndex: Int32 = 1
+        if let snapshotID {
+            sqlite3_bind_int64(statement, bindIndex, snapshotID)
+            bindIndex += 1
+        }
+        sqlite3_bind_int(statement, bindIndex, Int32(limit))
+
+        var events: [DiskProcessEvent] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+
+            let timestamp = Date(
+                timeIntervalSince1970: sqlite3_column_double(statement, 0)
+            )
+
+            let opPointer = sqlite3_column_text(statement, 1)
+            let operation = opPointer != nil ? String(cString: opPointer!) : ""
+
+            let bytes = UInt64(sqlite3_column_int64(statement, 2))
+
+            let namePointer = sqlite3_column_text(statement, 3)
+            let processName = namePointer != nil ? String(cString: namePointer!) : "Unknown"
+
+            let pid = sqlite3_column_int(statement, 4)
+
+            events.append(
+                DiskProcessEvent(
+                    timestamp: timestamp,
+                    operation: operation,
+                    bytes: bytes,
+                    processName: processName,
+                    pid: pid
+                )
+            )
+        }
+
+        return events
+    }
+
+    // MARK: - Disk Activity Ranking
+
+    func getTopDiskProcesses(
+        snapshotID: Int64? = nil,
+        limit: Int = 5
+    ) -> [DiskProcessSummary] {
+
+        var query = """
+        SELECT
+            process_name,
+            pid,
+            COALESCE(SUM(CASE WHEN UPPER(operation) LIKE 'R%' THEN bytes ELSE 0 END), 0) AS read_bytes,
+            COALESCE(SUM(CASE WHEN UPPER(operation) LIKE 'W%' THEN bytes ELSE 0 END), 0) AS write_bytes,
+            COALESCE(SUM(bytes), 0) AS total_bytes
+        FROM disk_process_events
+        """
+
+        if snapshotID != nil {
+            query += " WHERE snapshot_id = ?"
+        }
+
+        query += """
+         GROUP BY process_name, pid
+        ORDER BY total_bytes DESC, process_name ASC, pid ASC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+
+        guard sqlite3_prepare_v2(
+            database,
+            query,
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            print("❌ Impossible de lire les top disk processes")
+            return []
+        }
+
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        var bindIndex: Int32 = 1
+        if let snapshotID {
+            sqlite3_bind_int64(statement, bindIndex, snapshotID)
+            bindIndex += 1
+        }
+        sqlite3_bind_int(statement, bindIndex, Int32(limit))
+
+        var summaries: [DiskProcessSummary] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+
+            let namePointer = sqlite3_column_text(statement, 0)
+            let processName = namePointer != nil ? String(cString: namePointer!) : "Unknown"
+
+            let pid = sqlite3_column_int(statement, 1)
+            let readBytes = UInt64(sqlite3_column_int64(statement, 2))
+            let writeBytes = UInt64(sqlite3_column_int64(statement, 3))
+            let totalBytes = UInt64(sqlite3_column_int64(statement, 4))
+
+            summaries.append(
+                DiskProcessSummary(
+                    processName: processName,
+                    pid: pid,
+                    readBytes: readBytes,
+                    writeBytes: writeBytes,
+                    totalBytes: totalBytes
+                )
+            )
+        }
+
+        return summaries
+    }
 }
+
+struct DiskProcessSummary: Sendable, Equatable {
+    let processName: String
+    let pid: Int32
+    let readBytes: UInt64
+    let writeBytes: UInt64
+    let totalBytes: UInt64
+}
+
+typealias DiskProcessProcessSummary = DiskProcessSummary
