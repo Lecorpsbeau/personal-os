@@ -1,55 +1,10 @@
 import Foundation
-import MachO
 
+private let sharedCPUCollector = CPUCollector()
+
+// Compatibility façade retained for the existing call site and module API.
 func getCPUUsage() -> Double {
-
-    var cpuInfo: processor_info_array_t?
-    var numCPUInfo: mach_msg_type_number_t = 0
-    var numCPUs: natural_t = 0
-
-    let result = host_processor_info(
-        mach_host_self(),
-        PROCESSOR_CPU_LOAD_INFO,
-        &numCPUs,
-        &cpuInfo,
-        &numCPUInfo
-    )
-
-    guard result == KERN_SUCCESS, let cpuInfo else {
-        return 0
-    }
-
-    var user: UInt64 = 0
-    var system: UInt64 = 0
-    var idle: UInt64 = 0
-    var nice: UInt64 = 0
-
-    let cpuLoad = cpuInfo.withMemoryRebound(
-        to: processor_cpu_load_info.self,
-        capacity: Int(numCPUs)
-    ) { pointer in
-        Array(
-            UnsafeBufferPointer(
-                start: pointer,
-                count: Int(numCPUs)
-            )
-        )
-    }
-
-    for cpu in cpuLoad {
-        user += UInt64(cpu.cpu_ticks.0)
-        system += UInt64(cpu.cpu_ticks.1)
-        idle += UInt64(cpu.cpu_ticks.2)
-        nice += UInt64(cpu.cpu_ticks.3)
-    }
-
-    let total = user + system + idle + nice
-
-    guard total > 0 else {
-        return 0
-    }
-
-    return Double(total - idle) / Double(total) * 100
+    sharedCPUCollector.sample()
 }
 
 func getMemoryUsage() -> Double {
@@ -136,6 +91,25 @@ struct MacDetective {
         let fsUsageCollector = FSUsageCollector(parser: parser)
         fsUsageCollector.start()
 
+        let fsUsageStatus = fsUsageCollector.status
+        if fsUsageStatus.permissionDenied {
+            print("⚠️ Permissions fs_usage indisponibles : exécution de sudo -n refusée")
+            if !fsUsageStatus.stderrMessage.isEmpty {
+                print("   \(fsUsageStatus.stderrMessage)")
+            }
+        } else {
+            switch fsUsageStatus.processState {
+            case .launchFailed(let message):
+                print("❌ fs_usage n'a pas pu démarrer : \(message)")
+            case .terminated(let exitCode):
+                print("⚠️ fs_usage s'est terminé avec le code \(exitCode)")
+            case .outputPipeClosed:
+                print("⚠️ Le pipe de sortie fs_usage est fermé")
+            case .stopped, .starting, .running:
+                break
+            }
+        }
+
         print("")
         print("Mac Detective — Monitoring")
         print("--------------------------")
@@ -144,6 +118,7 @@ struct MacDetective {
         print("")
 
         // Initialize delta-based collectors.
+        _ = getCPUUsage()
         _ = diskCollector.sample()
         _ = networkCollector.sample()
         _ = processCollector.sample()
@@ -158,7 +133,7 @@ struct MacDetective {
             let disk = diskCollector.sample()
             let network = networkCollector.sample()
             let processes = processCollector.sample()
-            let diskEvents = fsUsageCollector.drainEvents()
+            let diskEvents = fsUsageCollector.getBufferedEvents()
 
             let snapshot = SystemSnapshot(
                 timestamp: Date(),
@@ -187,11 +162,14 @@ struct MacDetective {
                 print("   💾 fs_usage: \(diskEvents.count) disk events (\(String(format: "%.1f", Double(totalBytes) / 1_000_000)) MB)")
             }
 
-            guard let snapshotID = database.save(snapshot: snapshot) else {
+            guard let snapshotID = database.save(
+                snapshot: snapshot,
+                diskProcessEvents: diskEvents
+            ) else {
                 continue
             }
 
-            database.saveDiskProcessEvents(diskEvents, snapshotID: snapshotID)
+            fsUsageCollector.acknowledgeBufferedEvents(count: diskEvents.count)
 
             let topDiskProcesses = database.getTopDiskProcesses(snapshotID: snapshotID, limit: 3)
             if !topDiskProcesses.isEmpty {

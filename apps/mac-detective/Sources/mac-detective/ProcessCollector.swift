@@ -12,44 +12,31 @@ struct ProcessSnapshot {
     let diskWriteBytes: UInt64
 }
 
-final class ProcessCollector {
+// ProcessCollector is safe to share because sample(), baseline pruning and
+// baseline inspection are serialized by the collector lock.
+final class ProcessCollector: @unchecked Sendable {
 
+    private let lock = NSLock()
     private var previousCPUTime: [Int32: UInt64] = [:]
     private var previousReadBytes: [Int32: UInt64] = [:]
     private var previousWriteBytes: [Int32: UInt64] = [:]
     private var previousSampleTime: Date?
 
     func sample() -> [ProcessSnapshot] {
+        lock.lock()
+        defer { lock.unlock() }
 
         var processes: [ProcessSnapshot] = []
 
-        var count = proc_listallpids(nil, 0)
-
-        guard count > 0 else {
-            return []
-        }
-
-        var pids = [pid_t](
-            repeating: 0,
-            count: Int(count)
-        )
-
-        count = proc_listallpids(
-            &pids,
-            Int32(pids.count * MemoryLayout<pid_t>.size)
-        )
-
-        guard count > 0 else {
+        guard let pids = listProcessPIDs() else {
             return []
         }
 
         let now = Date()
+        let sampledPIDs = pids.filter { $0 > 0 }
+        var observedPIDs = Set<Int32>()
 
-        for pid in pids.prefix(Int(count)) {
-
-            guard pid > 0 else {
-                continue
-            }
+        for pid in sampledPIDs {
 
             // MARK: - Process information
 
@@ -70,6 +57,7 @@ final class ProcessCollector {
             guard result == size else {
                 continue
             }
+            observedPIDs.insert(pid)
 
             // MARK: - Process name
 
@@ -87,9 +75,10 @@ final class ProcessCollector {
             let name: String
 
             if nameLength > 0 {
-                name = String(
-                    cString: nameBuffer
-                )
+                let nameBytes = nameBuffer
+                    .prefix(Int(nameLength))
+                    .map { UInt8(bitPattern: $0) }
+                name = String(decoding: nameBytes, as: UTF8.self)
             } else {
                 name = "Unknown"
             }
@@ -172,9 +161,8 @@ final class ProcessCollector {
 
             previousCPUTime[pid] = cpuTime
 
-            // Only update disk baseline when the call succeeded.
-            // If the process is gone next sample, the stale baseline
-            // is harmless — delta will be 0.
+            // Only update disk baselines when the call succeeded.
+            // Baselines for PIDs that disappear are pruned after sampling.
             if diskResult == 0 {
                 previousReadBytes[pid]  = rawReadBytes
                 previousWriteBytes[pid] = rawWriteBytes
@@ -197,7 +185,68 @@ final class ProcessCollector {
         }
 
         previousSampleTime = now
+        pruneBaselinesLocked(keeping: observedPIDs)
 
         return processes
+    }
+
+    private func listProcessPIDs() -> [pid_t]? {
+        let initialCount = proc_listallpids(nil, 0)
+
+        guard initialCount > 0 else {
+            return nil
+        }
+
+        // Leave headroom because processes can be created between the
+        // counting call and the filling call. An exact-sized buffer can
+        // otherwise be overwritten by proc_listallpids.
+        var capacity = max(Int(initialCount) + 64, 64)
+        var pids = [pid_t](repeating: 0, count: capacity)
+        var count = proc_listallpids(
+            &pids,
+            Int32(capacity * MemoryLayout<pid_t>.size)
+        )
+
+        if Int(count) > capacity {
+            capacity = Int(count) + 64
+            pids = [pid_t](repeating: 0, count: capacity)
+            count = proc_listallpids(
+                &pids,
+                Int32(capacity * MemoryLayout<pid_t>.size)
+            )
+        }
+
+        guard count > 0, Int(count) <= capacity else {
+            return nil
+        }
+
+        return Array(pids.prefix(Int(count)))
+    }
+
+    func pruneBaselines(keeping activePIDs: Set<Int32>) {
+        lock.lock()
+        defer { lock.unlock() }
+        pruneBaselinesLocked(keeping: activePIDs)
+    }
+
+    private func pruneBaselinesLocked(keeping activePIDs: Set<Int32>) {
+        previousCPUTime = previousCPUTime.filter { key, _ in
+            activePIDs.contains(key)
+        }
+        previousReadBytes = previousReadBytes.filter { key, _ in
+            activePIDs.contains(key)
+        }
+        previousWriteBytes = previousWriteBytes.filter { key, _ in
+            activePIDs.contains(key)
+        }
+    }
+
+    var trackedBaselineProcessCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(previousCPUTime.keys)
+            .union(previousReadBytes.keys)
+            .union(previousWriteBytes.keys)
+            .count
     }
 }

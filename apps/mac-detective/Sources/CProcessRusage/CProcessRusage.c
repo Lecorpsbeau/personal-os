@@ -17,12 +17,13 @@ int get_process_disk_io(
 
     struct rusage_info_v4 usage = {0};
 
-    rusage_info_t buffer = &usage;
-
+    // proc_pid_rusage writes directly into the supplied rusage buffer.
+    // Do not pass a pointer to a local buffer pointer: that corrupts the
+    // caller's stack on macOS.
     int result = proc_pid_rusage(
         pid,
         RUSAGE_INFO_V4,
-        &buffer
+        (rusage_info_t)&usage
     );
 
     if (result != 0) {

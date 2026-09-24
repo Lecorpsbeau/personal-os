@@ -1,7 +1,26 @@
 import Foundation
 import SQLite3
 
+// SQLITE_TRANSIENT tells SQLite to copy the bound bytes before
+// sqlite3_bind_text returns. The temporary pointer provided by
+// String.withCString therefore never needs to outlive its closure.
+private let sqliteTransient = unsafeBitCast(
+    -1,
+    to: sqlite3_destructor_type.self
+)
+
+private struct DatabaseOperationError: Error, CustomStringConvertible {
+    let operation: String
+    let message: String
+
+    var description: String {
+        "\(operation): \(message)"
+    }
+}
+
 final class Database {
+
+    private static let currentSchemaVersion: Int32 = 1
 
     private var database: OpaquePointer?
 
@@ -30,13 +49,21 @@ final class Database {
                 .path
         }
 
-        if sqlite3_open(path, &database) != SQLITE_OK {
-            print("❌ Impossible d'ouvrir SQLite")
-        } else {
-            print("SQLite database:")
-            print(path)
+        let openResult = sqlite3_open(path, &database)
+
+        guard openResult == SQLITE_OK else {
+            let message = database.map {
+                String(cString: sqlite3_errmsg($0))
+            } ?? "unknown SQLite error"
+
+            print("❌ Impossible d'ouvrir SQLite: \(message)")
+            sqlite3_close(database)
+            database = nil
+            return
         }
 
+        print("SQLite database:")
+        print(path)
         createTables()
     }
 
@@ -44,95 +71,197 @@ final class Database {
         sqlite3_close(database)
     }
 
-    // MARK: - Tables
+    // MARK: - Schema and migrations
 
     private func createTables() {
 
-        let systemQuery = """
-        CREATE TABLE IF NOT EXISTS system_samples (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp REAL NOT NULL,
-            cpu REAL NOT NULL,
-            memory REAL NOT NULL,
-            disk_read REAL NOT NULL,
-            disk_write REAL NOT NULL,
-            network_in REAL NOT NULL,
-            network_out REAL NOT NULL
-        );
-        """
-
-        let processQuery = """
-        CREATE TABLE IF NOT EXISTS process_samples (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            snapshot_id INTEGER NOT NULL,
-            timestamp REAL NOT NULL,
-            pid INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            cpu REAL NOT NULL,
-            memory INTEGER NOT NULL,
-            disk_read_bytes INTEGER NOT NULL DEFAULT 0,
-            disk_write_bytes INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
-        );
-        """
-
-        let eventQuery = """
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            snapshot_id INTEGER NOT NULL,
-            timestamp REAL NOT NULL,
-            type TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            value REAL NOT NULL,
-            message TEXT NOT NULL,
-            FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
-        );
-        """
-
-        let diskProcessEventQuery = """
-        CREATE TABLE IF NOT EXISTS disk_process_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            snapshot_id INTEGER,
-            timestamp REAL NOT NULL,
-            operation TEXT NOT NULL,
-            bytes INTEGER NOT NULL,
-            process_name TEXT NOT NULL,
-            pid INTEGER NOT NULL,
-            FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
-        );
-        """
-
-        let diskProcessEventIndex = """
-        CREATE INDEX IF NOT EXISTS idx_disk_process_events_snapshot_id
-        ON disk_process_events(snapshot_id);
-        """
-
-        execute(query: systemQuery)
-        execute(query: processQuery)
-        execute(query: eventQuery)
-        execute(query: diskProcessEventQuery)
-        execute(query: diskProcessEventIndex)
-
-        // Additive migrations: add disk I/O columns to existing databases.
-        // ALTER TABLE ... ADD COLUMN is idempotent when the column already
-        // exists in a freshly-created table; we silence the "duplicate column"
-        // error intentionally.
-        execute(query: """
-            ALTER TABLE process_samples
-            ADD COLUMN disk_read_bytes INTEGER NOT NULL DEFAULT 0;
-        """)
-        execute(query: """
-            ALTER TABLE process_samples
-            ADD COLUMN disk_write_bytes INTEGER NOT NULL DEFAULT 0;
-        """)
-
-        print("Database schema ready")
+        do {
+            try execute(query: "PRAGMA foreign_keys = ON;")
+            try migrateSchema()
+            print("Database schema ready (version \(Self.currentSchemaVersion))")
+        } catch {
+            print("❌ SQLite schema error: \(error)")
+        }
     }
-    
-    private func execute(query: String) {
+
+    private func migrateSchema() throws {
+
+        let version = try schemaVersion()
+
+        guard version <= Self.currentSchemaVersion else {
+            throw DatabaseOperationError(
+                operation: "Unsupported database schema",
+                message: "version \(version) is newer than supported version \(Self.currentSchemaVersion)"
+            )
+        }
+
+        guard version < Self.currentSchemaVersion else {
+            return
+        }
+
+        try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
+
+        do {
+            try createBaseTables()
+
+            if try !tableHasColumn("process_samples", "disk_read_bytes") {
+                try execute(query: """
+                    ALTER TABLE process_samples
+                    ADD COLUMN disk_read_bytes INTEGER NOT NULL DEFAULT 0;
+                """)
+            }
+
+            if try !tableHasColumn("process_samples", "disk_write_bytes") {
+                try execute(query: """
+                    ALTER TABLE process_samples
+                    ADD COLUMN disk_write_bytes INTEGER NOT NULL DEFAULT 0;
+                """)
+            }
+
+            try execute(query: """
+                CREATE TABLE IF NOT EXISTS disk_process_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id INTEGER,
+                    timestamp REAL NOT NULL,
+                    operation TEXT NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    process_name TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+                );
+            """)
+
+            try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_disk_process_events_snapshot_id
+                ON disk_process_events(snapshot_id);
+            """)
+
+            try execute(query: """
+                CREATE INDEX IF NOT EXISTS idx_process_samples_snapshot_cpu
+                ON process_samples(snapshot_id, cpu DESC);
+            """)
+
+            try execute(
+                query: "PRAGMA user_version = \(Self.currentSchemaVersion);"
+            )
+            try execute(query: "COMMIT;")
+        } catch {
+            _ = try? execute(query: "ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func createBaseTables() throws {
+
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS system_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                cpu REAL NOT NULL,
+                memory REAL NOT NULL,
+                disk_read REAL NOT NULL,
+                disk_write REAL NOT NULL,
+                network_in REAL NOT NULL,
+                network_out REAL NOT NULL
+            );
+        """)
+
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS process_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                pid INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                cpu REAL NOT NULL,
+                memory INTEGER NOT NULL,
+                disk_read_bytes INTEGER NOT NULL DEFAULT 0,
+                disk_write_bytes INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+            );
+        """)
+
+        try execute(query: """
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                value REAL NOT NULL,
+                message TEXT NOT NULL,
+                FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+            );
+        """)
+    }
+
+    private func schemaVersion() throws -> Int32 {
+        var statement: OpaquePointer?
+
+        try prepare(
+            query: "PRAGMA user_version;",
+            statement: &statement,
+            operation: "Read database schema version"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw operationError("Read database schema version")
+        }
+
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private func tableHasColumn(
+        _ table: String,
+        _ column: String
+    ) throws -> Bool {
+
+        var statement: OpaquePointer?
+
+        try prepare(
+            query: "PRAGMA table_info(\(table));",
+            statement: &statement,
+            operation: "Inspect table \(table)"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        while true {
+            let result = sqlite3_step(statement)
+
+            if result == SQLITE_DONE {
+                return false
+            }
+
+            guard result == SQLITE_ROW else {
+                throw operationError("Inspect table \(table)")
+            }
+
+            guard let namePointer = sqlite3_column_text(statement, 1) else {
+                continue
+            }
+
+            if String(cString: namePointer) == column {
+                return true
+            }
+        }
+    }
+
+    @discardableResult
+    private func execute(query: String) throws -> Int32 {
+
+        guard let database else {
+            throw DatabaseOperationError(
+                operation: "SQLite statement",
+                message: "database is not open"
+            )
+        }
 
         var errorMessage: UnsafeMutablePointer<CChar>?
-
         let result = sqlite3_exec(
             database,
             query,
@@ -141,24 +270,122 @@ final class Database {
             &errorMessage
         )
 
-        if result != SQLITE_OK {
+        guard result == SQLITE_OK else {
+            let message = errorMessage.map {
+                String(cString: $0)
+            } ?? String(cString: sqlite3_errmsg(database))
 
-            if let errorMessage {
-                let message = String(
-                    cString: errorMessage
-                )
-
-                print("❌ SQLite error: \(message)")
-
-                sqlite3_free(errorMessage)
-            }
+            sqlite3_free(errorMessage)
+            throw DatabaseOperationError(
+                operation: "SQLite statement",
+                message: message
+            )
         }
+
+        return result
+    }
+
+    private func prepare(
+        query: String,
+        statement: inout OpaquePointer?,
+        operation: String
+    ) throws {
+
+        guard database != nil else {
+            throw DatabaseOperationError(
+                operation: operation,
+                message: "database is not open"
+            )
+        }
+
+        let result = sqlite3_prepare_v2(
+            database,
+            query,
+            -1,
+            &statement,
+            nil
+        )
+
+        guard result == SQLITE_OK else {
+            throw DatabaseOperationError(
+                operation: operation,
+                message: operationError(operation).message
+            )
+        }
+    }
+
+    private func operationError(
+        _ operation: String
+    ) -> DatabaseOperationError {
+
+        let message = database.map {
+            String(cString: sqlite3_errmsg($0))
+        } ?? "database is not open"
+
+        return DatabaseOperationError(
+            operation: operation,
+            message: message
+        )
     }
 
     // MARK: - Save snapshot
 
     @discardableResult
     func save(snapshot: SystemSnapshot) -> Int64? {
+        save(snapshot: snapshot, diskProcessEvents: [])
+    }
+
+    @discardableResult
+    func save(
+        snapshot: SystemSnapshot,
+        diskProcessEvents: [DiskProcessEvent]
+    ) -> Int64? {
+
+        do {
+            let snapshotID = try saveSnapshotAtomically(
+                snapshot: snapshot,
+                diskProcessEvents: diskProcessEvents
+            )
+
+            print(
+                "Snapshot saved to SQLite (\(snapshot.processes.count) processes, \(diskProcessEvents.count) disk events)"
+            )
+            return snapshotID
+        } catch {
+            print("❌ Impossible d'enregistrer le snapshot: \(error)")
+            return nil
+        }
+    }
+
+    private func saveSnapshotAtomically(
+        snapshot: SystemSnapshot,
+        diskProcessEvents: [DiskProcessEvent]
+    ) throws -> Int64 {
+
+        try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
+
+        do {
+            let snapshotID = try insertSystemSample(snapshot)
+            try insertProcessSamples(
+                snapshot.processes,
+                snapshotID: snapshotID,
+                timestamp: snapshot.timestamp
+            )
+            try insertDiskProcessEvents(
+                diskProcessEvents,
+                snapshotID: snapshotID
+            )
+            try execute(query: "COMMIT;")
+            return snapshotID
+        } catch {
+            _ = try? execute(query: "ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func insertSystemSample(
+        _ snapshot: SystemSnapshot
+    ) throws -> Int64 {
 
         let query = """
         INSERT INTO system_samples (
@@ -174,94 +401,68 @@ final class Database {
         """
 
         var statement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(
-            database,
-            query,
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-
-            print("❌ Impossible de préparer l'insertion du snapshot")
-            return nil
-        }
-
+        try prepare(
+            query: query,
+            statement: &statement,
+            operation: "Prepare system sample insert"
+        )
         defer {
             sqlite3_finalize(statement)
         }
 
-        sqlite3_bind_double(
-            statement,
-            1,
-            snapshot.timestamp.timeIntervalSince1970
+        try checkBind(
+            sqlite3_bind_double(
+                statement,
+                1,
+                snapshot.timestamp.timeIntervalSince1970
+            ),
+            operation: "Bind system sample timestamp"
         )
-
-        sqlite3_bind_double(
-            statement,
-            2,
-            snapshot.cpu
+        try checkBind(
+            sqlite3_bind_double(statement, 2, snapshot.cpu),
+            operation: "Bind system sample CPU"
         )
-
-        sqlite3_bind_double(
-            statement,
-            3,
-            snapshot.memory
+        try checkBind(
+            sqlite3_bind_double(statement, 3, snapshot.memory),
+            operation: "Bind system sample memory"
         )
-
-        sqlite3_bind_double(
-            statement,
-            4,
-            snapshot.diskRead
+        try checkBind(
+            sqlite3_bind_double(statement, 4, snapshot.diskRead),
+            operation: "Bind system sample disk read"
         )
-
-        sqlite3_bind_double(
-            statement,
-            5,
-            snapshot.diskWrite
+        try checkBind(
+            sqlite3_bind_double(statement, 5, snapshot.diskWrite),
+            operation: "Bind system sample disk write"
         )
-
-        sqlite3_bind_double(
-            statement,
-            6,
-            snapshot.networkIn
+        try checkBind(
+            sqlite3_bind_double(statement, 6, snapshot.networkIn),
+            operation: "Bind system sample network in"
         )
-
-        sqlite3_bind_double(
-            statement,
-            7,
-            snapshot.networkOut
+        try checkBind(
+            sqlite3_bind_double(statement, 7, snapshot.networkOut),
+            operation: "Bind system sample network out"
         )
+        try step(statement, operation: "Insert system sample")
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            print("❌ Impossible d'enregistrer le snapshot")
-            return nil
-        }
-
-        let snapshotID = sqlite3_last_insert_rowid(database)
-
-        for process in snapshot.processes {
-            saveProcess(
-                process,
-                snapshotID: snapshotID,
-                timestamp: snapshot.timestamp
+        guard let database else {
+            throw DatabaseOperationError(
+                operation: "Read inserted snapshot ID",
+                message: "database is not open"
             )
         }
 
-        print(
-            "Snapshot saved to SQLite (\(snapshot.processes.count) processes)"
-        )
-
-        return snapshotID
+        return sqlite3_last_insert_rowid(database)
     }
 
-    // MARK: - Save process
-
-    private func saveProcess(
-        _ process: ProcessSnapshot,
+    private func insertProcessSamples(
+        _ processes: [ProcessSnapshot],
         snapshotID: Int64,
         timestamp: Date
-    ) {
+    ) throws {
+
+        guard !processes.isEmpty else {
+            return
+        }
 
         let query = """
         INSERT INTO process_samples (
@@ -278,74 +479,227 @@ final class Database {
         """
 
         var statement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(
-            database,
-            query,
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            print("❌ Impossible de préparer le processus")
-            return
-        }
-
+        try prepare(
+            query: query,
+            statement: &statement,
+            operation: "Prepare process sample insert"
+        )
         defer {
             sqlite3_finalize(statement)
         }
 
-        sqlite3_bind_int64(
-            statement,
-            1,
-            snapshotID
-        )
+        for process in processes {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
 
-        sqlite3_bind_double(
-            statement,
-            2,
-            timestamp.timeIntervalSince1970
-        )
-
-        sqlite3_bind_int(
-            statement,
-            3,
-            process.pid
-        )
-
-        sqlite3_bind_double(
-            statement,
-            5,
-            process.cpuUsage
-        )
-
-        sqlite3_bind_int64(
-            statement,
-            6,
-            Int64(process.memoryBytes)
-        )
-
-        sqlite3_bind_int64(
-            statement,
-            7,
-            Int64(process.diskReadBytes)
-        )
-
-        sqlite3_bind_int64(
-            statement,
-            8,
-            Int64(process.diskWriteBytes)
-        )
-
-        process.name.withCString { namePointer in
-            sqlite3_bind_text(
-                statement,
-                4,
-                namePointer,
-                -1,
-                nil
+            try checkBind(
+                sqlite3_bind_int64(statement, 1, snapshotID),
+                operation: "Bind process snapshot ID"
             )
-            _ = sqlite3_step(statement)
+            try checkBind(
+                sqlite3_bind_double(
+                    statement,
+                    2,
+                    timestamp.timeIntervalSince1970
+                ),
+                operation: "Bind process timestamp"
+            )
+            try checkBind(
+                sqlite3_bind_int(statement, 3, process.pid),
+                operation: "Bind process PID"
+            )
+            try bindText(
+                process.name,
+                to: statement,
+                at: 4,
+                operation: "Bind process name"
+            )
+            try checkBind(
+                sqlite3_bind_double(statement, 5, process.cpuUsage),
+                operation: "Bind process CPU"
+            )
+            try checkBind(
+                sqlite3_bind_int64(
+                    statement,
+                    6,
+                    try int64Value(
+                        process.memoryBytes,
+                        operation: "Encode process memory"
+                    )
+                ),
+                operation: "Bind process memory"
+            )
+            try checkBind(
+                sqlite3_bind_int64(
+                    statement,
+                    7,
+                    try int64Value(
+                        process.diskReadBytes,
+                        operation: "Encode process disk read"
+                    )
+                ),
+                operation: "Bind process disk read"
+            )
+            try checkBind(
+                sqlite3_bind_int64(
+                    statement,
+                    8,
+                    try int64Value(
+                        process.diskWriteBytes,
+                        operation: "Encode process disk write"
+                    )
+                ),
+                operation: "Bind process disk write"
+            )
+            try step(statement, operation: "Insert process sample")
         }
+    }
+
+    private func insertDiskProcessEvents(
+        _ events: [DiskProcessEvent],
+        snapshotID: Int64?
+    ) throws {
+
+        guard !events.isEmpty else {
+            return
+        }
+
+        let query = """
+        INSERT INTO disk_process_events (
+            snapshot_id,
+            timestamp,
+            operation,
+            bytes,
+            process_name,
+            pid
+        )
+        VALUES (?, ?, ?, ?, ?, ?);
+        """
+
+        var statement: OpaquePointer?
+        try prepare(
+            query: query,
+            statement: &statement,
+            operation: "Prepare disk process event insert"
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        for event in events {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+
+            if let snapshotID {
+                try checkBind(
+                    sqlite3_bind_int64(statement, 1, snapshotID),
+                    operation: "Bind disk event snapshot ID"
+                )
+            } else {
+                try checkBind(
+                    sqlite3_bind_null(statement, 1),
+                    operation: "Bind null disk event snapshot ID"
+                )
+            }
+
+            try checkBind(
+                sqlite3_bind_double(
+                    statement,
+                    2,
+                    event.timestamp.timeIntervalSince1970
+                ),
+                operation: "Bind disk event timestamp"
+            )
+            try bindText(
+                event.operation,
+                to: statement,
+                at: 3,
+                operation: "Bind disk event operation"
+            )
+            try checkBind(
+                sqlite3_bind_int64(
+                    statement,
+                    4,
+                    try int64Value(
+                        event.bytes,
+                        operation: "Encode disk event bytes"
+                    )
+                ),
+                operation: "Bind disk event bytes"
+            )
+            try bindText(
+                event.processName,
+                to: statement,
+                at: 5,
+                operation: "Bind disk event process name"
+            )
+            try checkBind(
+                sqlite3_bind_int(statement, 6, event.pid),
+                operation: "Bind disk event PID"
+            )
+            try step(statement, operation: "Insert disk process event")
+        }
+    }
+
+    private func bindText(
+        _ value: String,
+        to statement: OpaquePointer?,
+        at index: Int32,
+        operation: String
+    ) throws {
+
+        var bindResult = SQLITE_ERROR
+        value.withCString { pointer in
+            bindResult = sqlite3_bind_text(
+                statement,
+                index,
+                pointer,
+                -1,
+                sqliteTransient
+            )
+        }
+        try checkBind(bindResult, operation: operation)
+    }
+
+    private func checkBind(
+        _ result: Int32,
+        operation: String
+    ) throws {
+
+        guard result == SQLITE_OK else {
+            throw DatabaseOperationError(
+                operation: operation,
+                message: operationError(operation).message
+            )
+        }
+    }
+
+    private func step(
+        _ statement: OpaquePointer?,
+        operation: String
+    ) throws {
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseOperationError(
+                operation: operation,
+                message: operationError(operation).message
+            )
+        }
+    }
+
+    private func int64Value(
+        _ value: UInt64,
+        operation: String
+    ) throws -> Int64 {
+
+        guard value <= UInt64(Int64.max) else {
+            throw DatabaseOperationError(
+                operation: operation,
+                message: "value exceeds SQLite INTEGER capacity"
+            )
+        }
+
+        return Int64(value)
     }
 
     func saveEvent(
@@ -396,22 +750,22 @@ final class Database {
         )
 
         event.type.withCString { pointer in
-            sqlite3_bind_text(
+            _ = sqlite3_bind_text(
                 statement,
                 3,
                 pointer,
                 -1,
-                nil
+                sqliteTransient
             )
         }
 
         event.severity.withCString { pointer in
-            sqlite3_bind_text(
+            _ = sqlite3_bind_text(
                 statement,
                 4,
                 pointer,
                 -1,
-                nil
+                sqliteTransient
             )
         }
 
@@ -422,12 +776,12 @@ final class Database {
         )
 
         event.message.withCString { pointer in
-            sqlite3_bind_text(
+            _ = sqlite3_bind_text(
                 statement,
                 6,
                 pointer,
                 -1,
-                nil
+                sqliteTransient
             )
         }
 
@@ -529,95 +883,16 @@ final class Database {
             return 0
         }
 
-        let query = """
-        INSERT INTO disk_process_events (
-            snapshot_id,
-            timestamp,
-            operation,
-            bytes,
-            process_name,
-            pid
-        )
-        VALUES (?, ?, ?, ?, ?, ?);
-        """
-
-        var statement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(
-            database,
-            query,
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            print("❌ Impossible de préparer l'insertion du disk_process_event")
+        do {
+            try execute(query: "BEGIN IMMEDIATE TRANSACTION;")
+            try insertDiskProcessEvents(events, snapshotID: snapshotID)
+            try execute(query: "COMMIT;")
+            return events.count
+        } catch {
+            _ = try? execute(query: "ROLLBACK;")
+            print("❌ Impossible d'enregistrer les disk_process_events: \(error)")
             return 0
         }
-
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        execute(query: "BEGIN TRANSACTION;")
-        var insertedCount = 0
-
-        for event in events {
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
-
-            if let snapshotID {
-                sqlite3_bind_int64(statement, 1, snapshotID)
-            } else {
-                sqlite3_bind_null(statement, 1)
-            }
-
-            sqlite3_bind_double(
-                statement,
-                2,
-                event.timestamp.timeIntervalSince1970
-            )
-
-            sqlite3_bind_int64(
-                statement,
-                4,
-                Int64(event.bytes)
-            )
-
-            sqlite3_bind_int(
-                statement,
-                6,
-                event.pid
-            )
-
-            event.operation.withCString { opPointer in
-                sqlite3_bind_text(
-                    statement,
-                    3,
-                    opPointer,
-                    -1,
-                    nil
-                )
-
-                event.processName.withCString { namePointer in
-                    sqlite3_bind_text(
-                        statement,
-                        5,
-                        namePointer,
-                        -1,
-                        nil
-                    )
-
-                    if sqlite3_step(statement) == SQLITE_DONE {
-                        insertedCount += 1
-                    } else {
-                        print("❌ Impossible d'enregistrer le disk_process_event")
-                    }
-                }
-            }
-        }
-
-        execute(query: "COMMIT;")
-        return insertedCount
     }
 
     func getDiskProcessEvents(

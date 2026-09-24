@@ -1,4 +1,7 @@
+import CProcessRusage
+import Darwin
 import Foundation
+import SQLite3
 import Testing
 @testable import mac_detective
 
@@ -22,6 +25,96 @@ struct FSUsageParserTests {
         #expect(components.hour == 21)
         #expect(components.minute == 55)
         #expect(components.second == 20)
+    }
+
+    private func makeReferenceDate(
+        year: Int = 2026,
+        month: Int = 9,
+        day: Int = 24,
+        hour: Int = 12,
+        minute: Int = 0,
+        second: Int = 0
+    ) -> (Date, Calendar) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let date = calendar.date(
+            from: DateComponents(
+                calendar: calendar,
+                timeZone: calendar.timeZone,
+                year: year,
+                month: month,
+                day: day,
+                hour: hour,
+                minute: minute,
+                second: second
+            )
+        )!
+        return (date, calendar)
+    }
+
+    @Test("Timestamp uses the injected reference date")
+    func testTimestampUsesReferenceDate() throws {
+        let (referenceDate, calendar) = makeReferenceDate(
+            year: 2026,
+            month: 9,
+            day: 24,
+            hour: 23,
+            minute: 59,
+            second: 58
+        )
+        let parser = FSUsageParser(
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+        let sample = "00:00:00.000001    Read    D=0x1  B=0x100   /dev/disk1   0.000001 R procA.10"
+
+        let event = try #require(parser.parse(sample))
+        let components = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second, .nanosecond],
+            from: event.timestamp
+        )
+
+        #expect(components.year == 2026)
+        #expect(components.month == 9)
+        #expect(components.day == 24)
+        #expect(components.hour == 0)
+        #expect(components.minute == 0)
+        #expect(components.second == 0)
+        #expect(abs((components.nanosecond ?? 0) - 1_000) <= 1_000)
+    }
+
+    @Test("Fractional seconds are preserved")
+    func testFractionalSecondsArePreserved() throws {
+        let (referenceDate, calendar) = makeReferenceDate()
+        let parser = FSUsageParser(
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+        let sample = "14:32:10.123456789    Write    D=0x1  B=0x200   /dev/disk1   0.000001 W procB.20"
+
+        let event = try #require(parser.parse(sample))
+        let components = calendar.dateComponents(
+            [.hour, .minute, .second, .nanosecond],
+            from: event.timestamp
+        )
+
+        #expect(components.hour == 14)
+        #expect(components.minute == 32)
+        #expect(components.second == 10)
+        #expect(abs((components.nanosecond ?? 0) - 123_456_789) <= 1_000)
+    }
+
+    @Test("Invalid fractions are rejected")
+    func testInvalidFractionIsRejected() {
+        let (referenceDate, calendar) = makeReferenceDate()
+        let parser = FSUsageParser(
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+        let sample = "14:32:10.1234567890    Write    D=0x1  B=0x200   /dev/disk1   0.000001 W procB.20"
+
+        #expect(parser.parse(sample) == nil)
     }
 
     @Test("Leading and trailing whitespace and multiline strings")
@@ -192,6 +285,27 @@ struct FSUsageCollectorIntegrationTests {
         #expect(events.count == 2)
         #expect(events[0].processName == "procB")
         #expect(events[1].processName == "procC")
+    }
+
+    @Test("Buffered events remain available until explicitly acknowledged")
+    func testBufferedEventsRequireAcknowledgement() {
+        let collector = FSUsageCollector()
+        let rawOutput = """
+        21:55:20.000001    Write    D=0x1  B=0x100   /dev/disk1   0.000010 W procA.10
+        21:55:20.000002    Read     D=0x2  B=0x200   /dev/disk1   0.000020 R procB.20
+        """
+
+        collector.processOutput(rawOutput)
+
+        let buffered = collector.getBufferedEvents()
+        #expect(buffered.count == 2)
+        #expect(collector.getBufferedEvents() == buffered)
+
+        collector.acknowledgeBufferedEvents(count: 1)
+        #expect(collector.getBufferedEvents().map(\.processName) == ["procB"])
+
+        collector.acknowledgeBufferedEvents(count: 10)
+        #expect(collector.getBufferedEvents().isEmpty)
     }
 
     @Test("Malformed lines are safely ignored without generating events")
@@ -555,3 +669,1131 @@ struct DiskActivityRankingTests {
         // when operations are neither R* nor W* (e.g. PgOut)
     }
 }
+
+@Suite("SQLite Event Text Integrity Tests")
+struct SQLiteEventTextIntegrityTests {
+
+    private struct StoredEvent: Equatable {
+        let type: String
+        let severity: String
+        let message: String
+    }
+
+    private func makeTemporaryDatabase() -> (Database, String) {
+        let tempPath = NSTemporaryDirectory() + "test_event_text_\(UUID().uuidString).sqlite"
+        let database = Database(databasePath: tempPath)
+        return (database, tempPath)
+    }
+
+    private func cleanDatabase(path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    private func readEvents(databasePath: String) throws -> [StoredEvent] {
+        var connection: OpaquePointer?
+        let openResult = sqlite3_open_v2(
+            databasePath,
+            &connection,
+            SQLITE_OPEN_READONLY,
+            nil
+        )
+        try #require(openResult == SQLITE_OK)
+
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(
+            connection,
+            "SELECT type, severity, message FROM events ORDER BY id ASC;",
+            -1,
+            &statement,
+            nil
+        )
+        try #require(prepareResult == SQLITE_OK)
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        var events: [StoredEvent] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let typePointer = try #require(sqlite3_column_text(statement, 0))
+            let severityPointer = try #require(sqlite3_column_text(statement, 1))
+            let messagePointer = try #require(sqlite3_column_text(statement, 2))
+
+            events.append(
+                StoredEvent(
+                    type: String(cString: typePointer),
+                    severity: String(cString: severityPointer),
+                    message: String(cString: messagePointer)
+                )
+            )
+        }
+
+        return events
+    }
+
+    @Test("Event text fields survive an actual SQLite round-trip")
+    func testEventTextRoundTrip() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = SystemSnapshot(
+            timestamp: timestamp,
+            cpu: 10,
+            memory: 50,
+            diskRead: 100,
+            diskWrite: 200,
+            networkIn: 300,
+            networkOut: 400,
+            processes: []
+        )
+        let snapshotID = try #require(database.save(snapshot: snapshot))
+
+        let expected = [
+            StoredEvent(
+                type: "CPU_SPIKE",
+                severity: "high",
+                message: "CPU usage above 80%"
+            ),
+            StoredEvent(
+                type: "DISK_ÉVÉNEMENT_✅",
+                severity: "critique_élevée",
+                message: "Écriture spéciale: café / naïve / 北京"
+            ),
+            StoredEvent(
+                type: "TYPE !@#$%^&*()",
+                severity: "medium+accent-é",
+                message: "Quote: \" apostrophe: ' slash: \\ newline:\n tab:\t <tag>&"
+            )
+        ]
+
+        for (index, event) in expected.enumerated() {
+            database.saveEvent(
+                DetectedEvent(
+                    type: event.type,
+                    severity: event.severity,
+                    value: Double(index),
+                    message: event.message
+                ),
+                snapshotID: snapshotID,
+                timestamp: timestamp
+            )
+        }
+
+        let stored = try readEvents(databasePath: path)
+        #expect(stored == expected)
+    }
+}
+
+@Suite("SQLite Migration Tests")
+struct SQLiteMigrationTests {
+
+    private func makeTemporaryPath() -> String {
+        NSTemporaryDirectory() + "test_migration_\(UUID().uuidString).sqlite"
+    }
+
+    private func cleanDatabase(path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+        try? FileManager.default.removeItem(atPath: path + "-wal")
+        try? FileManager.default.removeItem(atPath: path + "-shm")
+    }
+
+    private func execute(_ sql: String, databasePath: String) throws {
+        var connection: OpaquePointer?
+        let openResult = sqlite3_open_v2(
+            databasePath,
+            &connection,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+            nil
+        )
+        try #require(openResult == SQLITE_OK)
+
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let result = sqlite3_exec(
+            connection,
+            sql,
+            nil,
+            nil,
+            &errorMessage
+        )
+
+        if result != SQLITE_OK {
+            let message = errorMessage.map {
+                String(cString: $0)
+            } ?? "unknown SQLite error"
+            sqlite3_free(errorMessage)
+            throw MigrationTestError.sqlite(message)
+        }
+    }
+
+    private func readInteger(
+        _ sql: String,
+        databasePath: String
+    ) throws -> Int32 {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(
+                connection,
+                sql,
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private func objectExists(
+        type: String,
+        name: String,
+        databasePath: String
+    ) throws -> Bool {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(
+                connection,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?;",
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        _ = sqlite3_bind_text(statement, 1, type, -1, sqliteTransientForTests)
+        _ = sqlite3_bind_text(statement, 2, name, -1, sqliteTransientForTests)
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        return sqlite3_column_int(statement, 0) == 1
+    }
+
+    private func columnExists(
+        _ column: String,
+        databasePath: String
+    ) throws -> Bool {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(
+                connection,
+                "PRAGMA table_info(process_samples);",
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let namePointer = sqlite3_column_text(statement, 1) else {
+                continue
+            }
+
+            if String(cString: namePointer) == column {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func createInitialSchema(databasePath: String) throws {
+        try execute(
+            """
+            CREATE TABLE system_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                cpu REAL NOT NULL,
+                memory REAL NOT NULL,
+                disk_read REAL NOT NULL,
+                disk_write REAL NOT NULL,
+                network_in REAL NOT NULL,
+                network_out REAL NOT NULL
+            );
+
+            CREATE TABLE process_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                pid INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                cpu REAL NOT NULL,
+                memory INTEGER NOT NULL,
+                FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+            );
+
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                value REAL NOT NULL,
+                message TEXT NOT NULL,
+                FOREIGN KEY(snapshot_id) REFERENCES system_samples(id)
+            );
+
+            INSERT INTO system_samples (
+                id, timestamp, cpu, memory, disk_read, disk_write,
+                network_in, network_out
+            ) VALUES (
+                1, 1700000000, 12.5, 50.0, 100.0, 200.0, 300.0, 400.0
+            );
+
+            INSERT INTO process_samples (
+                id, snapshot_id, timestamp, pid, name, cpu, memory
+            ) VALUES (
+                1, 1, 1700000000, 42, 'legacy_process', 3.5, 4096
+            );
+
+            INSERT INTO events (
+                id, snapshot_id, timestamp, type, severity, value, message
+            ) VALUES (
+                1, 1, 1700000000, 'LEGACY_EVENT', 'legacy', 1.0, 'preserved'
+            );
+            """,
+            databasePath: databasePath
+        )
+    }
+
+    private func emptySnapshot() -> SystemSnapshot {
+        SystemSnapshot(
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            cpu: 1,
+            memory: 2,
+            diskRead: 3,
+            diskWrite: 4,
+            networkIn: 5,
+            networkOut: 6,
+            processes: []
+        )
+    }
+
+    @Test("Empty database migrates to the current schema")
+    func testEmptyDatabaseMigration() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let database = Database(databasePath: path)
+
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try objectExists(type: "table", name: "system_samples", databasePath: path))
+        #expect(try objectExists(type: "table", name: "process_samples", databasePath: path))
+        #expect(try objectExists(type: "table", name: "events", databasePath: path))
+        #expect(try objectExists(type: "table", name: "disk_process_events", databasePath: path))
+        #expect(try columnExists("disk_read_bytes", databasePath: path))
+        #expect(try columnExists("disk_write_bytes", databasePath: path))
+        #expect(try objectExists(type: "index", name: "idx_disk_process_events_snapshot_id", databasePath: path))
+        #expect(try objectExists(type: "index", name: "idx_process_samples_snapshot_cpu", databasePath: path))
+        #expect(database.getDiskProcessEvents().isEmpty)
+    }
+
+    @Test("Initial schema migrates without losing existing rows")
+    func testInitialSchemaMigrationPreservesData() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        try createInitialSchema(databasePath: path)
+        let database = Database(databasePath: path)
+
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM process_samples;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM events;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT disk_read_bytes FROM process_samples WHERE id = 1;", databasePath: path) == 0)
+        #expect(try readInteger("SELECT disk_write_bytes FROM process_samples WHERE id = 1;", databasePath: path) == 0)
+        #expect(try readInteger("SELECT pid FROM process_samples WHERE id = 1;", databasePath: path) == 42)
+        #expect(database.getTopProcesses(snapshotID: 1, limit: 1).first?.name == "legacy_process")
+    }
+
+    @Test("Current schema is accepted without structural changes")
+    func testCurrentSchemaIsAccepted() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        do {
+            let database = Database(databasePath: path)
+            #expect(database.save(snapshot: emptySnapshot()) != nil)
+        }
+
+        let reopened = Database(databasePath: path)
+
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
+        #expect(try columnExists("disk_read_bytes", databasePath: path))
+        #expect(try objectExists(type: "table", name: "disk_process_events", databasePath: path))
+        #expect(reopened.getDiskProcessEvents().isEmpty)
+    }
+
+    @Test("Repeated initialization is idempotent")
+    func testRepeatedMigrationIsIdempotent() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        do {
+            let database = Database(databasePath: path)
+            #expect(database.save(snapshot: emptySnapshot()) != nil)
+        }
+
+        for _ in 0..<3 {
+            let database = Database(databasePath: path)
+            #expect(database.getTopDiskProcesses().isEmpty)
+        }
+
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 1)
+        #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
+        #expect(try columnExists("disk_read_bytes", databasePath: path))
+        #expect(try columnExists("disk_write_bytes", databasePath: path))
+    }
+
+    @Test("Failed migration rolls back all schema changes")
+    func testFailedMigrationRollsBack() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        try createInitialSchema(databasePath: path)
+        try execute(
+            "CREATE VIEW disk_process_events AS SELECT 1 AS marker;",
+            databasePath: path
+        )
+
+        let database = Database(databasePath: path)
+
+        #expect(try readInteger("PRAGMA user_version;", databasePath: path) == 0)
+        #expect(!(try columnExists("disk_read_bytes", databasePath: path)))
+        #expect(!(try columnExists("disk_write_bytes", databasePath: path)))
+        #expect(try readInteger("SELECT COUNT(*) FROM system_samples;", databasePath: path) == 1)
+        #expect(database.getDiskProcessEvents().isEmpty)
+    }
+
+    @Test("Foreign keys are enforced on the Database connection")
+    func testForeignKeysAreEnabled() throws {
+        let path = makeTemporaryPath()
+        defer { cleanDatabase(path: path) }
+
+        let database = Database(databasePath: path)
+        let orphanEvent = DiskProcessEvent(
+            timestamp: Date(),
+            operation: "W",
+            bytes: 1024,
+            processName: "orphan",
+            pid: 999
+        )
+
+        #expect(!database.saveDiskProcessEvent(orphanEvent, snapshotID: 999_999))
+        #expect(database.getDiskProcessEvents().isEmpty)
+    }
+}
+
+@Suite("Atomic Snapshot Persistence Tests")
+struct AtomicSnapshotPersistenceTests {
+
+    private func makeTemporaryDatabase() -> (Database, String) {
+        let path = NSTemporaryDirectory() + "test_atomic_\(UUID().uuidString).sqlite"
+        let database = Database(databasePath: path)
+        return (database, path)
+    }
+
+    private func cleanDatabase(path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+        try? FileManager.default.removeItem(atPath: path + "-wal")
+        try? FileManager.default.removeItem(atPath: path + "-shm")
+    }
+
+    private func rowCount(
+        table: String,
+        databasePath: String
+    ) throws -> Int {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(
+                connection,
+                "SELECT COUNT(*) FROM \(table);",
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func makeSnapshot(
+        processes: [ProcessSnapshot] = []
+    ) -> SystemSnapshot {
+        SystemSnapshot(
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            cpu: 10,
+            memory: 50,
+            diskRead: 100,
+            diskWrite: 200,
+            networkIn: 300,
+            networkOut: 400,
+            processes: processes
+        )
+    }
+
+    private func makeProcess(
+        pid: Int32,
+        memoryBytes: UInt64 = 1_048_576
+    ) -> ProcessSnapshot {
+        ProcessSnapshot(
+            pid: pid,
+            name: "process_\(pid)",
+            cpuUsage: Double(pid),
+            memoryBytes: memoryBytes,
+            diskReadBytes: 1024,
+            diskWriteBytes: 2048
+        )
+    }
+
+    private func makeDiskEvent(
+        bytes: UInt64 = 4096
+    ) -> DiskProcessEvent {
+        DiskProcessEvent(
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            operation: "W",
+            bytes: bytes,
+            processName: "disk_process",
+            pid: 77
+        )
+    }
+
+    @Test("System, process and disk rows commit together")
+    func testSuccessfulAtomicSnapshot() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let snapshot = makeSnapshot(
+            processes: [
+                makeProcess(pid: 1),
+                makeProcess(pid: 2)
+            ]
+        )
+        let diskEvents = [
+            makeDiskEvent(bytes: 4096),
+            makeDiskEvent(bytes: 8192)
+        ]
+
+        let snapshotID = try #require(
+            database.save(
+                snapshot: snapshot,
+                diskProcessEvents: diskEvents
+            )
+        )
+
+        #expect(try rowCount(table: "system_samples", databasePath: path) == 1)
+        #expect(try rowCount(table: "process_samples", databasePath: path) == 2)
+        #expect(try rowCount(table: "disk_process_events", databasePath: path) == 2)
+        #expect(database.getTopProcesses(snapshotID: snapshotID, limit: 5).count == 2)
+        #expect(database.getDiskProcessEvents(snapshotID: snapshotID).count == 2)
+
+        let ranking = database.getTopDiskProcesses(snapshotID: snapshotID)
+        #expect(ranking.count == 1)
+        #expect(ranking.first?.writeBytes == 12_288)
+        #expect(ranking.first?.totalBytes == 12_288)
+    }
+
+    @Test("Process failure rolls back the whole snapshot")
+    func testProcessFailureRollsBackSnapshot() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let snapshot = makeSnapshot(
+            processes: [
+                makeProcess(pid: 1),
+                makeProcess(pid: 2, memoryBytes: UInt64.max)
+            ]
+        )
+
+        #expect(
+            database.save(
+                snapshot: snapshot,
+                diskProcessEvents: [makeDiskEvent()]
+            ) == nil
+        )
+        #expect(try rowCount(table: "system_samples", databasePath: path) == 0)
+        #expect(try rowCount(table: "process_samples", databasePath: path) == 0)
+        #expect(try rowCount(table: "disk_process_events", databasePath: path) == 0)
+    }
+
+    @Test("Disk event failure rolls back the whole snapshot")
+    func testDiskEventFailureRollsBackSnapshot() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let snapshot = makeSnapshot(processes: [makeProcess(pid: 1)])
+        let diskEvents = [
+            makeDiskEvent(bytes: 4096),
+            makeDiskEvent(bytes: UInt64.max)
+        ]
+
+        #expect(
+            database.save(
+                snapshot: snapshot,
+                diskProcessEvents: diskEvents
+            ) == nil
+        )
+        #expect(try rowCount(table: "system_samples", databasePath: path) == 0)
+        #expect(try rowCount(table: "process_samples", databasePath: path) == 0)
+        #expect(try rowCount(table: "disk_process_events", databasePath: path) == 0)
+    }
+
+    @Test("Standalone disk batches are atomic too")
+    func testStandaloneDiskBatchRollsBack() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let inserted = database.saveDiskProcessEvents([
+            makeDiskEvent(bytes: 4096),
+            makeDiskEvent(bytes: UInt64.max)
+        ])
+
+        #expect(inserted == 0)
+        #expect(try rowCount(table: "disk_process_events", databasePath: path) == 0)
+    }
+
+    @Test("Buffered fs_usage events are acknowledged only after persistence")
+    func testBufferedEventsSurviveFailedSnapshot() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let collector = FSUsageCollector()
+        collector.processOutput(
+            "21:55:20.000001    Write    D=0x1  B=0x100   /dev/disk1   0.000010 W procA.10"
+        )
+        let buffered = collector.getBufferedEvents()
+        #expect(buffered.count == 1)
+
+        let failingSnapshot = makeSnapshot(
+            processes: [makeProcess(pid: 1, memoryBytes: UInt64.max)]
+        )
+        #expect(
+            database.save(
+                snapshot: failingSnapshot,
+                diskProcessEvents: buffered
+            ) == nil
+        )
+        #expect(collector.getBufferedEvents() == buffered)
+
+        let snapshotID = try #require(
+            database.save(
+                snapshot: makeSnapshot(),
+                diskProcessEvents: buffered
+            )
+        )
+        collector.acknowledgeBufferedEvents(count: buffered.count)
+
+        #expect(collector.getBufferedEvents().isEmpty)
+        #expect(database.getDiskProcessEvents(snapshotID: snapshotID).count == 1)
+    }
+}
+
+@Suite("Process Data Reliability Tests")
+struct ProcessDataReliabilityTests {
+
+    private func makeTemporaryDatabase() -> (Database, String) {
+        let path = NSTemporaryDirectory() + "test_process_data_\(UUID().uuidString).sqlite"
+        let database = Database(databasePath: path)
+        return (database, path)
+    }
+
+    private func cleanDatabase(path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    private func queryPlanDetails(databasePath: String) throws -> [String] {
+        var connection: OpaquePointer?
+        try #require(
+            sqlite3_open_v2(
+                databasePath,
+                &connection,
+                SQLITE_OPEN_READONLY,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_close(connection)
+        }
+
+        var statement: OpaquePointer?
+        try #require(
+            sqlite3_prepare_v2(
+                connection,
+                """
+                EXPLAIN QUERY PLAN
+                SELECT pid, name, cpu, memory, disk_read_bytes, disk_write_bytes
+                FROM process_samples
+                WHERE snapshot_id = 1
+                ORDER BY cpu DESC
+                LIMIT 5;
+                """,
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK
+        )
+        defer {
+            sqlite3_finalize(statement)
+        }
+
+        var details: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let detailPointer = sqlite3_column_text(statement, 3) else {
+                continue
+            }
+            details.append(String(cString: detailPointer))
+        }
+        return details
+    }
+
+    @Test("C bridge reads Disk I/O for the current process")
+    func testCProcessRusageBridge() {
+        var readBytes: UInt64 = 0
+        var writeBytes: UInt64 = 0
+
+        let result = get_process_disk_io(
+            getpid(),
+            &readBytes,
+            &writeBytes
+        )
+
+        #expect(result == 0)
+    }
+
+    @Test("Baselines for missing PIDs are removed")
+    func testMissingPIDBaselinesArePruned() {
+        let collector = ProcessCollector()
+
+        let firstSample = collector.sample()
+        #expect(!firstSample.isEmpty)
+        #expect(collector.trackedBaselineProcessCount > 0)
+
+        collector.pruneBaselines(keeping: [])
+        #expect(collector.trackedBaselineProcessCount == 0)
+
+        let secondSample = collector.sample()
+        #expect(!secondSample.isEmpty)
+        #expect(collector.trackedBaselineProcessCount > 0)
+    }
+
+    @Test("Process baseline access is serialized")
+    func testConcurrentBaselineAccess() {
+        let collector = ProcessCollector()
+
+        DispatchQueue.concurrentPerform(iterations: 4) { _ in
+            _ = collector.sample()
+            _ = collector.trackedBaselineProcessCount
+        }
+
+        #expect(collector.trackedBaselineProcessCount > 0)
+    }
+
+    @Test("Snapshot CPU index preserves descending ranking")
+    func testSnapshotCPUIndexPreservesRanking() throws {
+        let (database, path) = makeTemporaryDatabase()
+        defer { cleanDatabase(path: path) }
+
+        let processes = [
+            ProcessSnapshot(
+                pid: 1,
+                name: "low_cpu",
+                cpuUsage: 1,
+                memoryBytes: 100,
+                diskReadBytes: 0,
+                diskWriteBytes: 0
+            ),
+            ProcessSnapshot(
+                pid: 2,
+                name: "high_cpu",
+                cpuUsage: 10,
+                memoryBytes: 100,
+                diskReadBytes: 0,
+                diskWriteBytes: 0
+            ),
+            ProcessSnapshot(
+                pid: 3,
+                name: "medium_cpu",
+                cpuUsage: 5,
+                memoryBytes: 100,
+                diskReadBytes: 0,
+                diskWriteBytes: 0
+            )
+        ]
+        let snapshot = SystemSnapshot(
+            timestamp: Date(),
+            cpu: 5,
+            memory: 50,
+            diskRead: 0,
+            diskWrite: 0,
+            networkIn: 0,
+            networkOut: 0,
+            processes: processes
+        )
+        let snapshotID = try #require(database.save(snapshot: snapshot))
+
+        let ranked = database.getTopProcesses(snapshotID: snapshotID, limit: 3)
+        #expect(ranked.map(\.name) == ["high_cpu", "medium_cpu", "low_cpu"])
+
+        let plan = try queryPlanDetails(databasePath: path)
+        #expect(plan.contains { $0.contains("idx_process_samples_snapshot_cpu") })
+    }
+}
+
+@Suite("FSUsageCollector Reliability Tests")
+struct FSUsageCollectorReliabilityTests {
+
+    private let firstLine = "21:55:20.000001    Read    D=0x1  B=0x100   /dev/disk1   0.000001 R procA.10"
+    private let secondLine = "21:55:21.000002    Write    D=0x2  B=0x200   /dev/disk1   0.000002 W procB.20"
+
+    private func waitUntil(
+        timeout: TimeInterval = 2,
+        _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return condition()
+    }
+
+    private func shellConfiguration(
+        _ command: String
+    ) -> FSUsageLaunchConfiguration {
+        FSUsageLaunchConfiguration(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", command]
+        )
+    }
+
+    @Test("Default fs_usage command is non-interactive")
+    func testDefaultLaunchConfiguration() {
+        let configuration = FSUsageLaunchConfiguration.fsUsage
+
+        #expect(configuration.executableURL.path == "/usr/bin/sudo")
+        #expect(configuration.arguments.first == "-n")
+        #expect(configuration.arguments.contains("/usr/bin/fs_usage"))
+        #expect(!configuration.arguments.contains("-S"))
+    }
+
+    @Test("Partial chunks are buffered until a complete line arrives")
+    func testPartialChunks() {
+        let collector = FSUsageCollector()
+
+        collector.processOutputChunk("21:55:20.000001    Read    D=0x1  B=0x100   /dev/disk1   0.000001 R proc")
+        #expect(collector.getBufferedEvents().isEmpty)
+
+        collector.processOutputChunk("A.10\n21:55:21.000002    Write    D=0x2  B=0x200   /dev/disk1   0.000002 W procB.20")
+        #expect(collector.getBufferedEvents().map(\.processName) == ["procA"])
+
+        collector.processOutputChunk("\n")
+        #expect(collector.getBufferedEvents().map(\.processName) == ["procA", "procB"])
+    }
+
+    @Test("Multiple lines, empty chunks and final unterminated lines are handled")
+    func testChunkBoundariesAndEmptyChunks() {
+        let collector = FSUsageCollector()
+
+        collector.processOutputChunk("")
+        collector.processOutputChunk(firstLine + "\n" + secondLine + "\n")
+        #expect(collector.getBufferedEvents().count == 2)
+
+        collector.processOutputChunk(
+            "21:55:22.000003    Write    D=0x3  B=0x300   /dev/disk1   0.000003 W procC.30"
+        )
+        #expect(collector.getBufferedEvents().count == 2)
+
+        collector.finishOutputStream()
+        #expect(collector.getBufferedEvents().map(\.processName) == [
+            "procA", "procB", "procC"
+        ])
+        #expect(collector.status.stdoutClosed)
+    }
+
+    @Test("Dropped events are counted when the bounded buffer is full")
+    func testDroppedEventCounter() {
+        let collector = FSUsageCollector(maxBufferSize: 2)
+
+        collector.processOutput(firstLine + "\n" + secondLine + "\n" + "21:55:22.000003    Write    D=0x3  B=0x300   /dev/disk1   0.000003 W procC.30")
+
+        #expect(collector.getBufferedEvents().count == 2)
+        #expect(collector.droppedEventCount == 1)
+    }
+
+    @Test("Concurrent complete chunks do not corrupt the event buffer")
+    func testConcurrentBufferAccess() {
+        let collector = FSUsageCollector(maxBufferSize: 200)
+
+        DispatchQueue.concurrentPerform(iterations: 100) { index in
+            let line = "21:55:20.000001    Read    D=0x1  B=0x100   /dev/disk1   0.000001 R concurrent.\(index + 1)"
+            collector.processOutputChunk(line + "\n")
+        }
+
+        #expect(collector.getBufferedEvents().count == 100)
+        #expect(collector.droppedEventCount == 0)
+    }
+
+    @Test("Launch failure is distinct from a running process")
+    func testLaunchFailureState() {
+        let missingExecutable = URL(
+            fileURLWithPath: "/private/var/m006-command-that-does-not-exist"
+        )
+        let collector = FSUsageCollector(
+            launchConfiguration: FSUsageLaunchConfiguration(
+                executableURL: missingExecutable,
+                arguments: []
+            )
+        )
+
+        collector.start()
+
+        #expect(
+            waitUntil {
+                if case .launchFailed = collector.status.processState {
+                    return true
+                }
+                return false
+            }
+        )
+        #expect(!collector.isRunning)
+        collector.stop()
+        #expect(!collector.hasOpenPipes)
+    }
+
+    @Test("Immediate process termination exposes its exit code")
+    func testImmediateTerminationState() {
+        let collector = FSUsageCollector(
+            launchConfiguration: shellConfiguration("exit 7")
+        )
+
+        collector.start()
+
+        #expect(
+            waitUntil {
+                if case .terminated(let exitCode) = collector.status.processState {
+                    return exitCode == 7
+                }
+                return false
+            }
+        )
+        #expect(!collector.isRunning)
+        collector.stop()
+        #expect(collector.status.processState == .stopped)
+        #expect(!collector.hasOpenPipes)
+    }
+
+    @Test("Running process stderr and permission failure are observable")
+    func testRunningProcessAndPermissionState() {
+        let collector = FSUsageCollector(
+            launchConfiguration: shellConfiguration(
+                "echo 'sudo: a password is required' >&2; sleep 1"
+            )
+        )
+
+        collector.start()
+
+        #expect(
+            waitUntil {
+                collector.status.stderrMessage.contains("password is required")
+            }
+        )
+        #expect(collector.status.permissionDenied)
+        #expect(collector.isRunning)
+        #expect(collector.status.processState == .running)
+
+        collector.stop()
+        #expect(collector.status.processState == .stopped)
+        #expect(!collector.hasOpenPipes)
+    }
+
+    @Test("Closing stdout is distinct from process termination")
+    func testOutputPipeClosureState() {
+        let collector = FSUsageCollector(
+            launchConfiguration: shellConfiguration("exec 1>&-; sleep 1")
+        )
+
+        collector.start()
+
+        #expect(waitUntil { collector.status.stdoutClosed })
+        #expect(collector.status.processState == .outputPipeClosed)
+        #expect(collector.isRunning)
+
+        collector.stop()
+        #expect(collector.status.processState == .stopped)
+        #expect(!collector.hasOpenPipes)
+    }
+
+    @Test("Stop terminates a running process and closes its pipes")
+    func testStopTerminatesProcess() {
+        let collector = FSUsageCollector(
+            launchConfiguration: shellConfiguration("sleep 5")
+        )
+
+        collector.start()
+        #expect(waitUntil { collector.status.processState == .running })
+
+        collector.stop()
+
+        #expect(!collector.isRunning)
+        #expect(collector.status.processState == .stopped)
+        #expect(!collector.hasOpenPipes)
+    }
+}
+
+@Suite("CPU and Mach Reliability Tests")
+struct CPUAndMachReliabilityTests {
+
+    @Test("First CPU sample establishes only a baseline")
+    func testFirstSampleEstablishesBaseline() {
+        let calculator = CPUUsageCalculator()
+
+        #expect(calculator.update(with: CPUTicks(total: 100, idle: 50)) == 0)
+        #expect(calculator.hasBaseline)
+    }
+
+    @Test("Second CPU sample uses the interval delta")
+    func testSecondSampleUsesDelta() {
+        let calculator = CPUUsageCalculator()
+
+        _ = calculator.update(with: CPUTicks(total: 100, idle: 50))
+        let usage = calculator.update(with: CPUTicks(total: 200, idle: 100))
+
+        #expect(usage == 50)
+    }
+
+    @Test("Artificial tick variation produces the expected CPU percentage")
+    func testTickVariationProducesExpectedUsage() {
+        let calculator = CPUUsageCalculator()
+
+        _ = calculator.update(with: CPUTicks(total: 1_000, idle: 800))
+        let usage = calculator.update(with: CPUTicks(total: 1_200, idle: 820))
+
+        // deltaTotal = 200, deltaIdle = 20 => 90% busy.
+        #expect(usage == 90)
+    }
+
+    @Test("Zero total delta does not divide by zero")
+    func testZeroTotalDelta() {
+        let calculator = CPUUsageCalculator()
+
+        _ = calculator.update(with: CPUTicks(total: 100, idle: 50))
+        let usage = calculator.update(with: CPUTicks(total: 100, idle: 50))
+
+        #expect(usage == 0)
+    }
+
+    @Test("Counter reset invalidates the interval safely")
+    func testCounterReset() {
+        let calculator = CPUUsageCalculator()
+
+        _ = calculator.update(with: CPUTicks(total: 100, idle: 50))
+        let usage = calculator.update(with: CPUTicks(total: 10, idle: 5))
+
+        #expect(usage == 0)
+        #expect(calculator.hasBaseline)
+    }
+
+    @Test("Mach processor info region uses the Mach deallocation contract")
+    func testMachMemoryRegionDeallocationContract() {
+        let region = MachMemoryRegion(
+            address: vm_address_t(0x1234),
+            integerCount: 4
+        )
+        var receivedAddress: vm_address_t = 0
+        var receivedSize: vm_size_t = 0
+
+        let result = region.deallocate { address, size in
+            receivedAddress = address
+            receivedSize = size
+            return KERN_SUCCESS
+        }
+
+        #expect(result == KERN_SUCCESS)
+        #expect(receivedAddress == region.address)
+        #expect(receivedSize == region.size)
+        #expect(region.size == vm_size_t(4 * MemoryLayout<integer_t>.size))
+    }
+}
+
+private enum MigrationTestError: Error {
+    case sqlite(String)
+}
+
+private let sqliteTransientForTests = unsafeBitCast(
+    -1,
+    to: sqlite3_destructor_type.self
+)

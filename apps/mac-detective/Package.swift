@@ -14,7 +14,7 @@ let package = Package(
         ),
         .testTarget(
             name: "mac-detectiveTests",
-            dependencies: ["mac-detective"]
+            dependencies: ["mac-detective", "CProcessRusage"]
         ),
     ]
 )

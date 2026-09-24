@@ -7,22 +7,29 @@ final class FSUsageParser {
         return try? NSRegularExpression(pattern: pattern)
     }()
 
-    private let microsecondFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSSSSS"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter
-    }()
+    private let referenceDateProvider: () -> Date
+    private let calendar: Calendar
 
-    private let secondFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter
-    }()
+    init(
+        referenceDate: @escaping () -> Date = { Date() },
+        calendar: Calendar = .current
+    ) {
+        self.referenceDateProvider = referenceDate
+        self.calendar = calendar
+    }
+
+    convenience init(
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) {
+        self.init(
+            referenceDate: { referenceDate },
+            calendar: calendar
+        )
+    }
 
     func parse(_ line: String) -> DiskProcessEvent? {
-        // Extract non-empty lines to handle multiline string inputs safely
+        // Extract non-empty lines to handle multiline string inputs safely.
         let lines = line.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -72,10 +79,64 @@ final class FSUsageParser {
     }
 
     private func parseTimestamp(_ string: String) -> Date? {
-        if let date = microsecondFormatter.date(from: string) {
-            return date
+        let timeParts = string.split(
+            separator: ":",
+            omittingEmptySubsequences: false
+        )
+
+        guard timeParts.count == 3,
+              let hour = Int(timeParts[0]),
+              (0...23).contains(hour),
+              let minute = Int(timeParts[1]),
+              (0...59).contains(minute) else {
+            return nil
         }
-        return secondFormatter.date(from: string)
+
+        let secondParts = timeParts[2].split(
+            separator: ".",
+            omittingEmptySubsequences: false
+        )
+
+        guard secondParts.count <= 2,
+              let second = Int(secondParts[0]),
+              (0...60).contains(second) else {
+            return nil
+        }
+
+        var nanoseconds = 0
+
+        if secondParts.count == 2 {
+            let fraction = secondParts[1]
+            guard !fraction.isEmpty,
+                  fraction.count <= 9,
+                  fraction.allSatisfy({ $0.isNumber }) else {
+                return nil
+            }
+
+            let normalized = fraction.padding(
+                toLength: 9,
+                withPad: "0",
+                startingAt: 0
+            )
+            guard let parsedFraction = Int(normalized) else {
+                return nil
+            }
+            nanoseconds = parsedFraction
+        }
+
+        let referenceDate = referenceDateProvider()
+        var components = DateComponents()
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        components.year = calendar.component(.year, from: referenceDate)
+        components.month = calendar.component(.month, from: referenceDate)
+        components.day = calendar.component(.day, from: referenceDate)
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        components.nanosecond = nanoseconds
+
+        return calendar.date(from: components)
     }
 
     private func parseProcess(_ string: String) -> (name: String, pid: Int32)? {
@@ -83,10 +144,14 @@ final class FSUsageParser {
             return nil
         }
 
-        let namePart = String(string[..<lastDotIndex]).trimmingCharacters(in: .whitespaces)
-        let pidPart = String(string[string.index(after: lastDotIndex)...]).trimmingCharacters(in: .whitespaces)
+        let namePart = String(string[..<lastDotIndex])
+            .trimmingCharacters(in: .whitespaces)
+        let pidPart = String(string[string.index(after: lastDotIndex)...])
+            .trimmingCharacters(in: .whitespaces)
 
-        guard !namePart.isEmpty, let pid = Int32(pidPart), pid >= 0 else {
+        guard !namePart.isEmpty,
+              let pid = Int32(pidPart),
+              pid >= 0 else {
             return nil
         }
 
@@ -97,7 +162,10 @@ final class FSUsageParser {
         let components = line.split(whereSeparator: { $0.isWhitespace })
 
         guard let bytesToken = components.first(where: {
-            $0.hasPrefix("B=0x") || $0.hasPrefix("B=0X") || $0.hasPrefix("b=0x") || $0.hasPrefix("b=0X")
+            $0.hasPrefix("B=0x") ||
+            $0.hasPrefix("B=0X") ||
+            $0.hasPrefix("b=0x") ||
+            $0.hasPrefix("b=0X")
         }) else {
             return nil
         }
